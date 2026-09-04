@@ -69,15 +69,14 @@ FastAPI · SQLAlchemy (async) · Redis · OpenAI Agents SDK · Azure SDKs — fu
 
 ## Current status
 
-**Built and working:** event ingestion with HMAC signature verification, credential resolution straight from WatchTower's own encrypted `Credential` table (no Key Vault), the full chat/RBAC/audit data model, a distributed Redis-backed concurrency cap, the full 44-tool ADF set with correctly seeded `rbac_permissions` (`allowed`/`requires_consent` per tool), and the chat consent/approval flow via the OpenAI Agents SDK's native tool-approval mechanism.
+**Built and working:** event ingestion with HMAC signature verification, credential resolution straight from WatchTower's own encrypted `Credential` table (no Key Vault), authentication via a WatchTower-minted signed assertion (RADAR deliberately delegates SSO to WatchTower's own Entra ID integration rather than performing OIDC itself), the full chat/RBAC/audit data model, a distributed Redis-backed concurrency cap, the full 44-tool ADF set with correctly seeded `rbac_permissions` (`allowed`/`requires_consent` per tool), and the chat consent/approval flow via the OpenAI Agents SDK's native tool-approval mechanism.
 
-**Not yet built:** real Microsoft SSO/OIDC authentication (identity currently comes from a short-lived JWT WatchTower's own backend mints, not an independent SSO integration RADAR performs itself), a sandboxed tool-dispatch boundary isolating real Azure calls from the rest of the request, the SOP vector store, and the frontend UI.
+**Not yet built:** the SOP vector store and the frontend UI. A sandboxed tool-dispatch boundary was considered and deprioritized — see `xyz/implementation_plan.md`'s "Known gaps" for the reasoning (private-VM deployment + existing injection detection + human approval on mutating calls cover most of the risk; the remaining supply-chain vector is judged low-likelihood for now).
 
 Full architecture detail: [`xyz/implementation_plan.md`](xyz/implementation_plan.md) — see its "Known gaps" section for the complete current list.
 
 ## Next development steps
 
-1. **Authentication** — real Microsoft SSO/OIDC, replacing the current WatchTower-minted-assertion as the sole identity signal.
-2. **Sandboxed tool-dispatch boundary** — isolate the step that makes real Azure calls from the trusted control plane (RBAC checks, credential resolution, audit writes), so a prompt-injection or compromised-dependency scenario can't reach live DB/Redis handles.
-3. **SOP vector store** — ingest/embed project SOP docs so the agent can ground answers in them.
-4. **Later, larger, less time-sensitive:** frontend UI, Synapse/Databricks/Fabric platform support, and an approver-fallback mechanism for an unavailable thread claimant.
+1. **SOP vector store** — ingest/embed project SOP docs so the agent can ground answers in them.
+2. **Least-privilege DB/Redis service account** for the app's own connections — cheap, caps the blast radius of an in-process compromise without a full sandboxing project.
+3. **Later, larger, less time-sensitive:** frontend UI, Synapse/Databricks/Fabric platform support, and an approver-fallback mechanism for an unavailable thread claimant.
