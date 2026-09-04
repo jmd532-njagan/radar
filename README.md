@@ -71,9 +71,9 @@ FastAPI · SQLAlchemy (async) · Redis · OpenAI Agents SDK · Azure SDKs — fu
 
 **Built and working:** event ingestion with HMAC signature verification, credential resolution straight from WatchTower's own encrypted `Credential` table (no Key Vault), authentication via a WatchTower-minted signed assertion (RADAR deliberately delegates SSO to WatchTower's own Entra ID integration rather than performing OIDC itself), the full chat/RBAC/audit data model, a distributed Redis-backed concurrency cap, the full 44-tool ADF set with correctly seeded `rbac_permissions` (`allowed`/`requires_consent` per tool), and the chat consent/approval flow via the OpenAI Agents SDK's native tool-approval mechanism.
 
-**Not yet built:** the SOP vector store and the frontend UI. A sandboxed tool-dispatch boundary was considered and deprioritized — see `xyz/implementation_plan.md`'s "Known gaps" for the reasoning (private-VM deployment + existing injection detection + human approval on mutating calls cover most of the risk; the remaining supply-chain vector is judged low-likelihood for now).
+**Not yet built:** the SOP vector store and the frontend UI. A sandboxed tool-dispatch boundary was considered and deprioritized — see [`docs/architecture.md`](docs/architecture.md)'s "Known gaps" for the reasoning (private-VM deployment + existing injection detection + human approval on mutating calls cover most of the risk; the remaining supply-chain vector is judged low-likelihood for now).
 
-Full architecture detail: [`xyz/implementation_plan.md`](xyz/implementation_plan.md) — see its "Known gaps" section for the complete current list.
+Full architecture detail: [`docs/architecture.md`](docs/architecture.md) — data flow, credential/RBAC model, data model, tool-calling and rerun-approval flow, and the complete "Known gaps" list.
 
 ## Next development steps
 

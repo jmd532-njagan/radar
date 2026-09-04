@@ -58,13 +58,9 @@ radar/
 ├── tests/                          # pytest suite
 ├── claude-desktop/                 # Standalone R&D tool exploring MCP + checkpoint/rollback —
 │                                    # separate venv, not part of src/, source for the future ADF tool port
-├── xyz/                             # Design docs & decision log (read implementation_plan.md first)
-│   ├── implementation_plan.md         # THE architecture reference + dated decision log
-│   ├── data/data_model.md              # Full schema reference, table by table
-│   ├── data/erDiagram.mmd              # ER diagram (Mermaid — paste into mermaid.live or view in VS Code)
-│   ├── need_to_implement.txt           # Tracked backlog, one topic at a time
-│   ├── qa.txt                          # Scratch discussion log
-│   └── security_scenarios.md           # Credential-isolation scenario walkthroughs
+├── xyz/                             # Gitignored — local-only scratch/notes, not present in a fresh
+│                                    # clone. Design-doc archive + working notes; see docs/architecture.md
+│                                    # for the tracked, team-facing version of this content.
 │
 ├── docker-compose.yml
 ├── Dockerfile
