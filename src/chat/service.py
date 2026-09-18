@@ -12,7 +12,12 @@ from fastapi import HTTPException
 from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from chat.access import require_admin, require_project_access, require_thread_access
+from chat.access import (
+    require_admin,
+    require_project_access,
+    require_real_project_membership,
+    require_thread_access,
+)
 from chat.history import to_input_list
 from chat.summarization import maybe_summarize
 from config.settings import settings
@@ -222,8 +227,9 @@ async def create_ad_hoc_thread(
     stops showing as pending. A stale/already-resolved/mismatched-project investigation_id is
     silently ignored rather than erroring — the thread still gets created either way, just
     without the link, since the user's message shouldn't be blocked by a notification that
-    someone else already claimed or that no longer exists."""
-    await require_project_access(db, user_id, project)
+    someone else already claimed or that no longer exists. Creating a thread is a write
+    action — requires real project membership, not just the admin view-only bypass."""
+    await require_real_project_membership(db, user_id, project)
 
     failure_event = None
     if investigation_id is not None:
@@ -428,6 +434,7 @@ async def get_admin_analytics(db: AsyncSession, user_id: str) -> dict:
 async def claim_thread(db: AsyncSession, user_id: str, thread_id: str) -> ChatThread:
     thread = await _get_thread_or_404(db, thread_id)
     await require_thread_access(db, user_id, thread)
+    await require_real_project_membership(db, user_id, thread.project)
 
     result = await db.execute(
         update(ChatThread)
@@ -464,6 +471,7 @@ async def rename_thread(
 ) -> ChatThread:
     thread = await _get_thread_or_404(db, thread_id)
     await require_thread_access(db, user_id, thread)
+    await require_real_project_membership(db, user_id, thread.project)
     _require_claimant_or_unclaimed(thread, user_id)
     thread.title = title[:60]
     await db.commit()
@@ -474,6 +482,7 @@ async def rename_thread(
 async def delete_thread(db: AsyncSession, user_id: str, thread_id: str) -> None:
     thread = await _get_thread_or_404(db, thread_id)
     await require_thread_access(db, user_id, thread)
+    await require_real_project_membership(db, user_id, thread.project)
     _require_claimant_or_unclaimed(thread, user_id)
     thread.is_deleted = True
     await db.commit()
@@ -629,6 +638,7 @@ async def prepare_message_send(
     response has started sending can't turn into a clean HTTP error anymore)."""
     thread = await _get_thread_or_404(db, thread_id)
     await require_thread_access(db, user_id, thread)
+    await require_real_project_membership(db, user_id, thread.project)
     await _ensure_claimed_by(db, thread, user_id)
 
     if thread.pending_tool_approval is not None:
