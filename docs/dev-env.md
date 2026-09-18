@@ -13,7 +13,7 @@ uv sync --all-groups
 npm install            # Prisma tooling only — see prisma/schema.prisma
 cp .env.example .env   # fill in real values — see config/settings.py for the full list
 npx prisma migrate deploy   # applies this repo's own radar-schema migrations
-PYTHONPATH=src uv run python -m uvicorn main:app --reload --app-dir src
+uv run python -m uvicorn main:app --reload --app-dir src
 ```
 
 Or via Docker: `docker compose up --build`.
@@ -42,7 +42,7 @@ local testing):
 
 ```bash
 TOOL_EXEC_ASSERTION_SECRET=<same value as the chat backend's> \
-  PYTHONPATH=src uv run python -m uvicorn server:app --port 8100 --app-dir src
+  uv run python -m uvicorn server:app --port 8100 --app-dir src
 ```
 
 Then set on the chat backend's own `.env`: `TOOL_EXEC_SERVICE_URL=http://<host>:8100` and the
