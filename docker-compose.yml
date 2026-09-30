@@ -1,19 +1,11 @@
 # RADAR has no database of its own — its tables live inside WatchTower's own Postgres instance
 # (the "radar" schema), so there is no local `postgres` service here. Point DATABASE_URL in
-# .env at that real instance (see .env.example).
+# .env at that real instance (see .env.example). RADAR runs as one process (one uvicorn
+# worker): see src/config/settings.py.
 services:
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-
   radar:
     build: .
     ports:
       - "8000:8000"
     env_file: .env
-    environment:
-      REDIS_URL: redis://redis:6379
-    depends_on:
-      - redis
     restart: unless-stopped
