@@ -26,28 +26,13 @@ model ProjectMetadata {
   project  String  @id
   platform String?
 
-  credentials       Credential[]
-  projectRca        ProjectRCA[]
+  failurePatterns   FailurePattern[]
+  memory            ProjectMemory[]
+  sopDocuments      SopDocument[]
   failureEvents     FailureEvent[]
   chatThreads       ChatThread[]
 
   @@map("project_metadata")
-}
-
-model Credential {
-  id               BigInt  @id @default(autoincrement())
-  project          String
-  resource_group   String
-  factory_name     String
-  tenant_id        String
-  client_id        String
-  subscription_id  String
-
-  projectMetadata ProjectMetadata @relation(fields: [project], references: [project])
-  failureEvents   FailureEvent[]
-
-  @@unique([project, factory_name], name: "uq_credentials_project_factory")
-  @@map("credentials")
 }
 
 // Row-Level Security enabled + FORCEd, policy scoped by `platform` — hand-added raw SQL in the
@@ -57,30 +42,107 @@ model Credential {
 // connects as a Postgres superuser, which unconditionally bypasses RLS) until the app's DB
 // role is changed to a non-superuser one.
 model RBACPermission {
-  tool_name        String  @id
+  platform         String  @default("adf")
+  tool_name        String
   allowed          Boolean
   requires_consent Boolean @default(true)
-  platform         String  @default("adf")
 
+  @@id([platform, tool_name])
   @@map("rbac_permissions")
 }
 
-model ProjectRCA {
-  id                     BigInt    @id @default(autoincrement())
-  pipeline_id            String
-  project                String
-  error_signature        String
-  error_category         String
-  root_cause             String?
-  fix_applied            String?
-  failure_count          Int       @default(1)
-  last_failure_timestamp DateTime? @db.Timestamptz
-  updated_at             DateTime? @db.Timestamptz
+// One row per kind of failure in a project. `identity` is the parsed signature's specific code
+// or, for generic wrapper codes, its fingerprint (see src/intake/signature.py); null for
+// symptom-only patterns extracted from SOPs. Occurrences are failure_events rows pointing here.
+// CHECKs and the FK to public."User" are hand-added in the migrations (Prisma can't model them).
+// An uploaded SOP; a new upload replaces the project's previous one (status 'replaced').
+// At most one active per project: partial unique index uq_sop_documents_one_active, hand-added
+// in the migration (Prisma can't model partial indexes).
+model SopDocument {
+  id           BigInt   @id @default(autoincrement())
+  project      String
+  file_name    String
+  content_hash String
+  version      Int
+  status       String   @default("active")
+  warnings     Json     @default("[]")
+  uploaded_by  String?  @db.Uuid
+  uploaded_at  DateTime @default(now()) @db.Timestamptz
 
   projectMetadata ProjectMetadata @relation(fields: [project], references: [project])
+  chunks          SopChunk[]
 
-  @@unique([pipeline_id, project, error_signature], name: "uq_project_rca_pipeline_project_signature")
-  @@map("project_rca")
+  @@index([project, status], map: "ix_sop_documents_project_status")
+  @@map("sop_documents")
+}
+
+// One retrievable section of an SOP with its bge-base embedding; scored in memory (no index).
+model SopChunk {
+  id           BigInt   @id @default(autoincrement())
+  document_id  BigInt
+  position     Int
+  heading_path String
+  text         String
+  embedding    Float[]  @db.Real
+
+  document SopDocument      @relation(fields: [document_id], references: [id], onDelete: Cascade)
+  facts    ProjectMemory[]
+  patterns FailurePattern[]
+
+  @@index([document_id], map: "ix_sop_chunks_document")
+  @@map("sop_chunks")
+}
+
+// Short facts about a project, always included in the agent's system prompt. kind: environment
+// | schedule | dependency | contact | rule | quirk | verify_after. origin: human | incident | sop.
+// status: proposed | active | retired.
+model ProjectMemory {
+  id          BigInt    @id @default(autoincrement())
+  project     String
+  kind        String
+  text        String
+  origin      String
+  status      String    @default("proposed")
+  created_by  String?   @db.Uuid
+  approved_by String?   @db.Uuid
+  approved_at DateTime? @db.Timestamptz
+  source_chunk_id BigInt?
+  created_at  DateTime  @default(now()) @db.Timestamptz
+  updated_at  DateTime  @default(now()) @db.Timestamptz
+
+  projectMetadata ProjectMetadata @relation(fields: [project], references: [project])
+  sourceChunk     SopChunk?       @relation(fields: [source_chunk_id], references: [id], onDelete: SetNull)
+
+  @@index([project, status], map: "ix_project_memory_project_status")
+  @@map("project_memory")
+}
+
+model FailurePattern {
+  id          BigInt    @id @default(autoincrement())
+  project     String
+  status      String    @default("proposed")
+  identity    String?
+  platform    String
+  code        String?
+  error_type  String?
+  template    String?
+  pipelines   String[]  @default([])
+  category    String?
+  cause       String?
+  verify_with String[]  @default([])
+  fix_actions String[]  @default([])
+  approved_by String?   @db.Uuid
+  approved_at DateTime? @db.Timestamptz
+  source_chunk_id BigInt?
+  created_at  DateTime  @default(now()) @db.Timestamptz
+  updated_at  DateTime  @default(now()) @db.Timestamptz
+
+  projectMetadata ProjectMetadata @relation(fields: [project], references: [project])
+  sourceChunk     SopChunk?       @relation(fields: [source_chunk_id], references: [id], onDelete: SetNull)
+  failureEvents   FailureEvent[]
+
+  @@unique([project, identity], name: "uq_failure_patterns_project_identity")
+  @@map("failure_patterns")
 }
 
 model AuditLog {
@@ -123,18 +185,21 @@ model FailureEvent {
   error_detail     Json?
   trigger_type     String?
   seed_message     String?
-  resolved_thread_id String? @db.Uuid
   seen_at          DateTime? @db.Timestamptz
+  pattern_id       BigInt?
+  matched_by       String?
+  outcome          String?
+  signature        Json?
   created_at       DateTime @db.Timestamptz
   updated_at       DateTime? @db.Timestamptz
 
   projectMetadata ProjectMetadata @relation(fields: [project], references: [project])
-  credential      Credential?     @relation(fields: [project, factory_name], references: [project, factory_name])
+  pattern         FailurePattern? @relation(fields: [pattern_id], references: [id], onDelete: SetNull)
   auditLogs       AuditLog[]
   chatThread      ChatThread?     @relation("FailureEventThread")
-  resolvedThread  ChatThread?     @relation("FailureEventResolvedThread", fields: [resolved_thread_id], references: [thread_id])
 
   @@index([project, pipeline_name, created_at], name: "ix_failure_events_project_pipeline_created")
+  @@index([pattern_id], map: "ix_failure_events_pattern")
   @@map("failure_events")
 }
 
@@ -153,7 +218,6 @@ model ChatThread {
 
   projectMetadata ProjectMetadata @relation(fields: [project], references: [project])
   failureEvent    FailureEvent?   @relation("FailureEventThread", fields: [investigation_id], references: [investigation_id])
-  resolvesFailureEvent FailureEvent? @relation("FailureEventResolvedThread")
   messages        ChatMessage[]
   analytics       ChatAnalytics[]
 
@@ -177,9 +241,11 @@ model ChatMessage {
   @@map("chat_messages")
 }
 
+// purpose's CHECK (chat | sop_extraction | memory_plan | summary | title) is in the migration.
 model ChatAnalytics {
   id              BigInt   @id @default(autoincrement())
-  thread_id       String   @db.Uuid
+  thread_id       String?  @db.Uuid
+  purpose         String   @default("chat")
   user_id         String?  @db.Uuid
   project         String
   platform        String
@@ -190,13 +256,14 @@ model ChatAnalytics {
   estimated_cost  Float    @default(0.0)
   created_at      DateTime @db.Timestamptz
 
-  chatThread ChatThread @relation(fields: [thread_id], references: [thread_id])
+  chatThread ChatThread? @relation(fields: [thread_id], references: [thread_id])
 
   @@index([thread_id])
   @@index([user_id])
   @@map("chat_analytics")
 }
 
+// user_id's FK to public."User" is hand-added in the migration (cross-schema).
 model MessageFeedback {
   id         BigInt   @id @default(autoincrement())
   message_id BigInt

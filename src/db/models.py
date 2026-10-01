@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import (
     JSON,
@@ -9,14 +9,14 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
-    ForeignKeyConstraint,
     Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
+    text,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -24,49 +24,22 @@ class Base(DeclarativeBase):
     pass
 
 
+# text[] in Postgres; JSON on sqlite (the test database), which has no array type.
+StringList = ARRAY(String).with_variant(JSON(), "sqlite")
+FloatList = ARRAY(Float).with_variant(JSON(), "sqlite")
+
+
 class ProjectMetadata(Base):
     __tablename__ = "project_metadata"
 
-    # Stable internal identifier — normalised from event.project at intake
+    # WatchTower's own projectName, verbatim — the same key public."Credential" and
+    # public."UserProjectAssignment" use, so every cross-schema lookup matches exactly.
     project: Mapped[str] = mapped_column(String, primary_key=True)
 
     # A project is always one platform (adf | synapse | databricks | fabric), even if it has
-    # multiple factories/accounts on that platform. Populated at onboarding.
+    # multiple factories/accounts on that platform. Set automatically at intake and on first
+    # chat, from the project's WatchTower integration.
     platform: Mapped[str | None] = mapped_column(String)
-
-
-class Credential(Base):
-    """
-    One row per platform instance (ADF factory / Databricks account / etc.) a project has. A
-    project currently has exactly one instance, but the table stays general to support more
-    without another migration.
-
-    Non-secret identifiers (tenant_id/client_id/subscription_id/resource_group/factory_name)
-    are plain columns — they're identifiers, not credentials, and grant no access on their
-    own. The one real secret, client_secret, is not stored here at all — it's resolved per
-    call straight from WatchTower's own public."Credential".clientSecret (see
-    gateway/credential_resolution.py). tenant_id/client_id/subscription_id are NOT NULL: every
-    code path that reads a Credential row (gateway/credential_resolution.py,
-    chat/state_builder.py) treats them as required to build a working ADF client — a row
-    missing them would fail confusingly at call time instead of being rejected at write time.
-    """
-
-    __tablename__ = "credentials"
-    __table_args__ = (
-        UniqueConstraint(
-            "project", "factory_name", name="uq_credentials_project_factory"
-        ),
-    )
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    project: Mapped[str] = mapped_column(
-        String, ForeignKey("project_metadata.project"), nullable=False, index=True
-    )
-    resource_group: Mapped[str] = mapped_column(String, nullable=False)
-    factory_name: Mapped[str] = mapped_column(String, nullable=False)
-    tenant_id: Mapped[str] = mapped_column(String, nullable=False)
-    client_id: Mapped[str] = mapped_column(String, nullable=False)
-    subscription_id: Mapped[str] = mapped_column(String, nullable=False)
 
 
 class RBACPermission(Base):
@@ -77,48 +50,173 @@ class RBACPermission(Base):
 
     __tablename__ = "rbac_permissions"
 
+    # Keyed by (platform, tool_name): two platforms may each have e.g. a list_pipelines.
+    # RADAR's own tools (propose_failure_pattern, propose_memory) use platform "radar".
+    platform: Mapped[str] = mapped_column(
+        String, primary_key=True, default="adf", server_default="adf"
+    )
     tool_name: Mapped[str] = mapped_column(String, primary_key=True)
     allowed: Mapped[bool] = mapped_column(Boolean, nullable=False)
     requires_consent: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default="true"
     )
-    # Defense-in-depth for tool_search_tool.py's build_chat_tools: every real row is "adf"
-    # today; filtering by this column means a future non-ADF caller gets zero rows (safe
-    # no-op) instead of leaking these tools into an unrelated platform.
-    platform: Mapped[str] = mapped_column(
-        String, nullable=False, default="adf", server_default="adf"
-    )
 
 
-class ProjectRCA(Base):
-    __tablename__ = "project_rca"
+class SopDocument(Base):
+    """An uploaded SOP (.docx). A new upload for a project replaces the previous one: its
+    status becomes `replaced` and its chunks are deleted. `warnings` are the mismatches found at
+    upload (file name vs project, pipelines the SOP names that RADAR doesn't monitor, ...)."""
+
+    __tablename__ = "sop_documents"
     __table_args__ = (
-        # Also serves plain pipeline_id/project-only queries via the leftmost-prefix rule —
-        # no standalone index needed for those.
-        UniqueConstraint(
-            "pipeline_id",
+        Index("ix_sop_documents_project_status", "project", "status"),
+        # At most one active SOP per project.
+        Index(
+            "uq_sop_documents_one_active",
             "project",
-            "error_signature",
-            name="uq_project_rca_pipeline_project_signature",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+            sqlite_where=text("status = 'active'"),
+        ),
+        CheckConstraint(
+            "status IN ('active', 'replaced')", name="ck_sop_documents_status"
         ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    pipeline_id: Mapped[str] = mapped_column(String, nullable=False)
     project: Mapped[str] = mapped_column(
         String, ForeignKey("project_metadata.project"), nullable=False
     )
-    error_signature: Mapped[str] = mapped_column(String, nullable=False)
-    error_category: Mapped[str] = mapped_column(String, nullable=False)
-    root_cause: Mapped[str | None] = mapped_column(Text)
-    # Covers both what was done AND how to prevent recurrence. Content here gets resent as
-    # context in every future check_known_fix call, so keep it short.
-    fix_applied: Mapped[str | None] = mapped_column(Text)
-    failure_count: Mapped[int] = mapped_column(Integer, default=1)
-    last_failure_timestamp: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True)
+    file_name: Mapped[str] = mapped_column(String, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="active")
+    warnings: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    uploaded_by: Mapped[str | None] = mapped_column(UUID(as_uuid=False))
+    uploaded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
     )
-    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class SopChunk(Base):
+    """One retrievable piece of an SOP: a section's text under its heading path, and its
+    bge-base embedding (768 floats)."""
+
+    __tablename__ = "sop_chunks"
+    __table_args__ = (Index("ix_sop_chunks_document", "document_id"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    document_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("sop_documents.id", ondelete="CASCADE"), nullable=False
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    heading_path: Mapped[str] = mapped_column(Text, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(FloatList, nullable=False)
+
+
+class ProjectMemory(Base):
+    """A short fact about a project, always included in the agent's system prompt. Facts a
+    person writes are active at once; facts the agent (or SOP extraction) proposes stay
+    `proposed` until someone approves them. created_by/approved_by reference public."User"
+    (FKs in the migration). Changes are recorded in audit_log."""
+
+    __tablename__ = "project_memory"
+    __table_args__ = (
+        Index("ix_project_memory_project_status", "project", "status"),
+        CheckConstraint(
+            "kind IN ('rule', 'environment', 'schedule', 'dependency', 'contact', "
+            "'verify_after', 'quirk')",
+            name="ck_project_memory_kind",
+        ),
+        CheckConstraint(
+            "origin IN ('human', 'incident', 'sop')", name="ck_project_memory_origin"
+        ),
+        CheckConstraint(
+            "status IN ('proposed', 'active', 'retired')",
+            name="ck_project_memory_status",
+        ),
+        CheckConstraint(
+            "length(text) BETWEEN 1 AND 300", name="ck_project_memory_text_length"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    project: Mapped[str] = mapped_column(
+        String, ForeignKey("project_metadata.project"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    origin: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="proposed")
+    created_by: Mapped[str | None] = mapped_column(UUID(as_uuid=False))
+    approved_by: Mapped[str | None] = mapped_column(UUID(as_uuid=False))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source_chunk_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("sop_chunks.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+
+
+class FailurePattern(Base):
+    """One kind of failure in a project, and what's known about it — compact fields written for
+    the agent. `identity` is the parsed signature's specific code or, for generic wrapper codes,
+    its fingerprint (intake/signature.py); null for symptom-only patterns extracted from SOPs.
+    cause / category / verify_with / fix_actions are empty until a diagnosis is approved.
+    Occurrences are the failure_events rows pointing here, so counts and "last seen" are derived;
+    approved_by references public."User" (FK in the migration); changes go to audit_log."""
+
+    __tablename__ = "failure_patterns"
+    __table_args__ = (
+        UniqueConstraint(
+            "project", "identity", name="uq_failure_patterns_project_identity"
+        ),
+        CheckConstraint(
+            "status IN ('proposed', 'active', 'retired')",
+            name="ck_failure_patterns_status",
+        ),
+        CheckConstraint(
+            "length(cause) <= 200", name="ck_failure_patterns_cause_length"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    project: Mapped[str] = mapped_column(
+        String, ForeignKey("project_metadata.project"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(String, nullable=False, default="proposed")
+    identity: Mapped[str | None] = mapped_column(String)
+    platform: Mapped[str] = mapped_column(String, nullable=False)
+    code: Mapped[str | None] = mapped_column(String)
+    error_type: Mapped[str | None] = mapped_column(String)
+    template: Mapped[str | None] = mapped_column(Text)
+    pipelines: Mapped[list[str]] = mapped_column(
+        StringList, nullable=False, default=list
+    )
+    category: Mapped[str | None] = mapped_column(String)
+    cause: Mapped[str | None] = mapped_column(Text)
+    verify_with: Mapped[list[str]] = mapped_column(
+        StringList, nullable=False, default=list
+    )
+    fix_actions: Mapped[list[str]] = mapped_column(
+        StringList, nullable=False, default=list
+    )
+    approved_by: Mapped[str | None] = mapped_column(UUID(as_uuid=False))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source_chunk_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("sop_chunks.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
 
 
 class AuditLog(Base):
@@ -131,7 +229,7 @@ class AuditLog(Base):
     its tool calls still need auditing. Postgres skips FK enforcement on NULL. thread_id is
     the only column that ties a row to the specific chat the tool call happened in —
     investigation_id alone doesn't cover it, since it's NULL for every ad-hoc thread, which is
-    most chat usage. Also nullable — some events (thread_setup's "notification_ready") aren't
+    most chat usage. Also nullable — some events (chat/notification.py's "notification_ready") aren't
     chat-turn-scoped at all.
 
     user_id is WatchTower's public."User".id, the same real identity
@@ -157,7 +255,9 @@ class AuditLog(Base):
     pipeline_name: Mapped[str] = mapped_column(String, nullable=False)
     project: Mapped[str] = mapped_column(String, nullable=False)
     platform: Mapped[str] = mapped_column(String, nullable=False)
-    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC)
+    )
     event_type: Mapped[str] = mapped_column(String, nullable=False)
     user_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False))
     detail: Mapped[dict | None] = mapped_column(JSON)
@@ -173,10 +273,13 @@ class FailureEvent(Base):
 
     __tablename__ = "failure_events"
     __table_args__ = (
-        ForeignKeyConstraint(
-            ["project", "factory_name"],
-            ["credentials.project", "credentials.factory_name"],
-            name="fk_failure_events_project_factory",
+        CheckConstraint(
+            "matched_by IN ('code', 'fingerprint', 'new')",
+            name="ck_failure_events_matched_by",
+        ),
+        CheckConstraint(
+            "outcome IN ('fixed', 'not_fixed', 'unknown')",
+            name="ck_failure_events_outcome",
         ),
         Index(
             "ix_failure_events_project_pipeline_created",
@@ -197,6 +300,7 @@ class FailureEvent(Base):
     )
     platform: Mapped[str] = mapped_column(String, nullable=False)
     pipeline_name: Mapped[str] = mapped_column(String, nullable=False)
+    # The ADF factory the project's WatchTower integration pointed at when the failure came in.
     factory_name: Mapped[str | None] = mapped_column(String)
     run_status: Mapped[str] = mapped_column(String, nullable=False)
     start_time: Mapped[datetime] = mapped_column(
@@ -206,19 +310,24 @@ class FailureEvent(Base):
     last_error: Mapped[str | None] = mapped_column(Text)
     error_detail: Mapped[dict | None] = mapped_column(JSON)
     trigger_type: Mapped[str | None] = mapped_column(String)
-    # Written once at intake (chat/thread_setup.py), read by the notification bell and the
-    # draft ("new") chat page. NULL once a real ChatThread has been created from it
-    # (resolved_thread_id set) — nothing left pending at that point.
+    # Written once at intake (chat/notification.py), read by the notification bell and the
+    # draft ("new") chat page. The notification is resolved once a ChatThread with this
+    # investigation_id exists (chat_threads.investigation_id is the only link between them).
     seed_message: Mapped[str | None] = mapped_column(Text)
-    resolved_thread_id: Mapped[str | None] = mapped_column(
-        UUID(as_uuid=False), ForeignKey("chat_threads.thread_id")
-    )
-    # Distinct from resolved_thread_id: sending a message resolves a notification, but a
+    # Distinct from being resolved: sending a message resolves a notification, but a
     # human can open/read one from the notification list without ever sending anything. Set
     # the moment that specific notification's row is clicked in the list (not just when the
     # list itself is opened) — drives the "new" vs "already looked at this" opacity
     # distinction. NULL means nobody's opened it yet.
     seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # The failure pattern this event matched or created, how it matched
+    # (code | fingerprint | new), how the investigation ended, and the parsed signature.
+    pattern_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("failure_patterns.id", ondelete="SET NULL"), index=True
+    )
+    matched_by: Mapped[str | None] = mapped_column(String)
+    outcome: Mapped[str | None] = mapped_column(String)
+    signature: Mapped[dict | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
@@ -272,7 +381,7 @@ class ChatThread(Base):
     # post_message), renamable via PATCH /chat/threads/{id}.
     title: Mapped[str | None] = mapped_column(String)
     # Real identity, WatchTower's public.User.id (a true cross-schema FK, see the migration) —
-    # carried directly in the verified X-Radar-Assertion JWT's `id` claim (chat/deps.py's
+    # carried directly in the verified X-Radar-Assertion JWT's `id` claim (chat/access.py's
     # get_current_user_id).
     claimed_by_user_id: Mapped[str | None] = mapped_column(
         UUID(as_uuid=False), index=True
@@ -307,8 +416,7 @@ class ChatMessage(Base):
     __tablename__ = "chat_messages"
     __table_args__ = (
         # Serves cursor-paginated scrollback (WHERE thread_id = ? ORDER BY created_at) and
-        # plain thread_id-only lookups (leftmost prefix) — replaces the standalone
-        # thread_id index below, which would be redundant with this.
+        # plain thread_id-only lookups (leftmost prefix).
         Index("ix_chat_messages_thread_created", "thread_id", "created_at"),
         CheckConstraint("role IN ('user', 'assistant')", name="ck_chat_messages_role"),
     )
@@ -326,20 +434,28 @@ class ChatMessage(Base):
 
 
 class ChatAnalytics(Base):
-    """One row per completed assistant turn — real token usage (summed from the OpenAI Agents
-    SDK's own per-response Usage, not the char-based estimate _message_out uses for the UI's
-    live token_count display) plus an estimated cost. Every row is self-contained
-    (project/platform/model denormalized), same as AuditLog.
+    """One row per LLM call (llm/client.py::add_usage): real token usage from the response,
+    not the char-based estimate _message_out uses for the UI's live token_count display, plus
+    an estimated cost. `purpose` says which call: a whole chat turn (summed across its
+    responses), SOP extraction, the memory planner, a conversation summary or a thread title.
+    user_id is who caused it; thread_id is null for calls outside a thread. Every row is
+    self-contained (project/platform/model denormalized), same as AuditLog.
     """
 
     __tablename__ = "chat_analytics"
+    __table_args__ = (
+        CheckConstraint(
+            "purpose IN ('chat', 'sop_extraction', 'memory_plan', 'summary', 'title')",
+            name="ck_chat_analytics_purpose",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    thread_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False),
-        ForeignKey("chat_threads.thread_id"),
-        nullable=False,
-        index=True,
+    thread_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("chat_threads.thread_id"), index=True
+    )
+    purpose: Mapped[str] = mapped_column(
+        String, nullable=False, default="chat", server_default="chat"
     )
     user_id: Mapped[str | None] = mapped_column(UUID(as_uuid=False), index=True)
     project: Mapped[str] = mapped_column(String, nullable=False)
@@ -350,19 +466,12 @@ class ChatAnalytics(Base):
     # How many of input_tokens Azure served from its own prompt cache (a repeated identical
     # prefix, e.g. this turn's system prompt + tool schemas across its own multi-step
     # tool-calling loop, is billed at a discount automatically). A subset of input_tokens, not
-    # a separate pool — kept out of total_tokens' sum for that reason. estimated_cost prices
-    # it at the cheaper rate.
+    # a separate pool. estimated_cost prices it at the cheaper rate.
     cached_tokens: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     estimated_cost: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
-
-    @property
-    def total_tokens(self) -> int:
-        """Derived, not stored — always input_tokens + output_tokens. A Python property
-        makes it impossible for the two to drift."""
-        return self.input_tokens + self.output_tokens
 
 
 class MessageFeedback(Base):
@@ -384,6 +493,7 @@ class MessageFeedback(Base):
     message_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("chat_messages.id"), nullable=False
     )
+    # FK to public."User" (in the migration; cross-schema, not modelled here).
     user_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False)
     rating: Mapped[str] = mapped_column(String, nullable=False)  # up | down
     created_at: Mapped[datetime] = mapped_column(
