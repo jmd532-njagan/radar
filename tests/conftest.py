@@ -31,19 +31,20 @@ async def chat_db_factory():
     constructs (pg_insert etc.), so this is safe and far faster than real Postgres per test.
 
     Also attaches a fake "public" schema with minimal stand-ins for WatchTower's own
-    public."User"/"UserProjectAssignment"/"Service"/"Credential" tables — chat/access.py,
+    public."User"/"UserProjectAssignment"/"Service"/"Credential"/"credentialUser" tables —
+    chat/access.py,
     chat/notification.py and gateway/credential_resolution.py run real raw SQL against those,
     so tests need something for that SQL to hit. Only the columns those queries select/join on
     are modeled; use seed_watchtower_access()/seed_watchtower_integration() to populate them.
-    Credential.resources is a Postgres text[] in WatchTower, which sqlite can't model — tests
-    exercising resource-based membership patch chat.access._project_resources instead."""
+    Integrations-tab membership comes from credentialUser rows: insert them directly, or patch
+    chat.access._project_employee_ids."""
     engine = create_async_engine("sqlite+aiosqlite://")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.exec_driver_sql("ATTACH DATABASE ':memory:' AS public")
         await conn.exec_driver_sql(
             'CREATE TABLE public."User" (id TEXT PRIMARY KEY, email TEXT NOT NULL, '
-            'name TEXT, "isAdmin" INTEGER NOT NULL DEFAULT 0, "azureObjectId" TEXT)'
+            'name TEXT, "isAdmin" INTEGER NOT NULL DEFAULT 0, "jinEmployeeId" TEXT)'
         )
         await conn.exec_driver_sql(
             'CREATE TABLE public."UserProjectAssignment" ('
@@ -58,6 +59,9 @@ async def chat_db_factory():
             '"subscriptionId" TEXT, "resourceGroupName" TEXT, "dataFactoryName" TEXT, '
             'resources TEXT, "isDeleted" INTEGER NOT NULL DEFAULT 0, '
             '"createdAt" TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)'
+        )
+        await conn.exec_driver_sql(
+            'CREATE TABLE public."credentialUser" ("credentialId" TEXT NOT NULL, "employeeId" TEXT NOT NULL)'
         )
     factory = async_sessionmaker(engine, expire_on_commit=False)
     yield factory

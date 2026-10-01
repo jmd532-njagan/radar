@@ -1,6 +1,6 @@
-"""Project membership: admin view-only, Integrations-tab resources as members (JIN employee_id
-= Azure AD object id = User.azureObjectId), and on-demand ProjectMetadata for freshly
-integrated projects."""
+"""Project membership: admin view-only, Integrations-tab people as members (credentialUser JIN
+employee ids = User.jinEmployeeId), and on-demand ProjectMetadata for freshly integrated
+projects."""
 
 from unittest.mock import AsyncMock, patch
 
@@ -30,7 +30,7 @@ async def _add_user(
     async with db_factory() as db:
         await db.execute(
             text(
-                'INSERT INTO public."User" (id, email, name, "isAdmin", "azureObjectId") '
+                'INSERT INTO public."User" (id, email, name, "isAdmin", "jinEmployeeId") '
                 "VALUES (:id, :email, :name, :admin, :oid)"
             ),
             {
@@ -46,7 +46,7 @@ async def _add_user(
 
 def _resources(*values):
     return patch(
-        "chat.access._project_resources", new=AsyncMock(return_value=set(values))
+        "chat.access._project_employee_ids", new=AsyncMock(return_value=set(values))
     )
 
 
@@ -161,3 +161,27 @@ async def test_thread_needs_an_adf_integration(chat_client, chat_db_factory):
             "/chat/threads", json={"project": "nope"}, headers=_auth_headers(RESOURCE)
         )
     assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_people_linked_in_credential_user_are_members(chat_db_factory):
+    # How the Integrations tab saves people now: a credentialUser row per person, keyed by
+    # their JIN employee id (= User.jinEmployeeId); a deleted integration counts for nothing.
+    await _add_user(
+        chat_db_factory, RESOURCE, name="Carol Danvers", object_id=CAROL_OBJECT_ID
+    )
+    await seed_watchtower_integration(chat_db_factory, PROJECT)
+    async with chat_db_factory() as db:
+        await db.execute(
+            text(
+                'INSERT INTO public."credentialUser" ("credentialId", "employeeId") '
+                "VALUES (:cred, :emp)"
+            ),
+            {"cred": f"cred-{PROJECT}", "emp": CAROL_OBJECT_ID.upper()},
+        )
+        await db.commit()
+        assert await notification_recipient_ids(db, PROJECT) == [user_id_for(RESOURCE)]
+
+        await db.execute(text('UPDATE public."Credential" SET "isDeleted" = 1'))
+        await db.commit()
+        assert await notification_recipient_ids(db, PROJECT) == []

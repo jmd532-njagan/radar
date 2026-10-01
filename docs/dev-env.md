@@ -117,8 +117,8 @@ in the next step is empty.
 
 That writes one `public."Credential"` row, which is everything RADAR needs; there's nothing to
 add on the RADAR side. The project now appears under **RADAR AI** for:
-- the resources you picked (matched to their WatchTower account by Azure AD object id, so each
-  must have signed in to WatchTower at least once);
+- the resources you picked (linked by their JIN employee id, so each must have signed in to
+  WatchTower at least once, or been loaded by the Azure user refresh);
 - admins, read-only.
 
 To add someone who isn't a resource, run this SQL:

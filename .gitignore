@@ -43,3 +43,4 @@ docs/*
 !docs/dev-env.md
 !docs/error-corpus-review.md
 !docs/folder_structure.md
+!docs/watchtowerchanges.md

@@ -68,11 +68,15 @@ Chat turns stream back as Server-Sent Events.
 | `WATCHTOWER_CREDENTIAL_KEY` | `JWT_SECRET_KEY` | decrypting stored platform secrets (CryptoJS AES) |
 
 **WatchTower tables RADAR reads (never writes), in `public`:**
-- `User`: `id`, `name`, `email`, `isAdmin`, `azureObjectId`.
+- `User`: `id`, `name`, `email`, `isAdmin`, `jinEmployeeId` (the JIN employee id, also the
+  person's Entra object id, saved at SSO login).
 - `UserProjectAssignment`: manual project members, with `notifyOnFailure`.
 - `Credential` + `Service`: one row per project integration from WatchTower's Integrations
   tab. `Service.name` is the platform (`adf`, `fabric`, …); the row holds the connection
-  fields, the encrypted secret, `pipelines[]` (monitored) and `resources[]` (people).
+  fields, the encrypted secret, `pipelines[]` (monitored) and `resources[]` (people's names,
+  display only).
+- `credentialUser`: the people picked for each integration, as (`credentialId`,
+  `employeeId` = `User.jinEmployeeId`). This is what project membership is read from.
 - `AppProject`: WatchTower's project list (synced from the company's JIN database).
 
 ## 3. How a request flows
@@ -235,8 +239,8 @@ first.
 
 A user is a **member** of a project if they either:
 - have a `UserProjectAssignment` row, or
-- are listed in the project's `Credential.resources`. Those are Azure AD object ids, matched to
-  `User.azureObjectId`, which WatchTower saves at SSO login.
+- are linked to one of the project's live integrations in `credentialUser` (the people picked
+  in the Integrations tab), by their JIN employee id = `User.jinEmployeeId`.
 
 Access rules:
 - **Read** (`require_project_access`): member or admin.
@@ -482,7 +486,7 @@ Azure error parser.
 | Symptom | Where to look |
 |---|---|
 | Failures don't arrive | RADAR log: `Failure event rejected` = HMAC mismatch. Nothing at all = WatchTower isn't polling or the pipeline isn't in `Credential.pipelines`. |
-| A user sees no project / gets 403 | `chat/access.py`: are they in `UserProjectAssignment`, or does their `azureObjectId` appear in `Credential.resources`? Admins are read-only. |
+| A user sees no project / gets 403 | `chat/access.py`: are they in `UserProjectAssignment`, or linked to the project's integration in `credentialUser` (their `jinEmployeeId`)? Admins are read-only. |
 | 401 on chat calls | `RADAR_ASSERTION_SECRET` mismatch, or the user has no `User` row. |
 | "Failed to decrypt client_secret" | `WATCHTOWER_CREDENTIAL_KEY` ≠ WatchTower `JWT_SECRET_KEY`. |
 | Agent doesn't use a tool | Is it in `rbac_permissions` with `allowed`? Is it retrieved for that message (`retrieve_relevant_tools`)? Is the description clear? |
@@ -499,8 +503,8 @@ Azure error parser.
 - **One ADF factory per project:** with several `Credential` rows, the oldest wins.
 - **No approver fallback:** if the claimant disappears mid-approval, the 90-minute TTL is the
   only way out.
-- **Resource access needs a prior login:** until someone signs in to WatchTower, their
-  `azureObjectId` isn't known.
+- **Resource access needs a prior login (or the Azure user refresh):** until then, their
+  `jinEmployeeId` isn't known.
 - **Tool calls run in-process,** with the app's trust level. This is acceptable on a private VM
   reachable only by WatchTower. A least-privilege DB account for the app is a cheap mitigation
   still to do.

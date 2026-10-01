@@ -8,10 +8,10 @@ WatchTower's public.User.id — the identity every check here keys on (never ema
 
 A user is a member of a project if either:
 - WatchTower's public."UserProjectAssignment" has a row for them (manual assignment), or
-- they're one of the "resources" picked for that project in WatchTower's Integrations tab.
-  public."Credential".resources holds JIN employee_ids, which are Azure AD object ids — the
-  same id WatchTower saves as public."User"."azureObjectId" at SSO login — so a resource maps
-  straight to a WatchTower user id.
+- they're one of the people picked for that project in WatchTower's Integrations tab:
+  public."credentialUser" links each integration (public."Credential") to their JIN
+  employee_id, which is public."User"."jinEmployeeId" (also their Entra object id, saved at
+  SSO login). Credential.resources holds the same people's names, for display only.
 """
 
 import jwt
@@ -22,26 +22,28 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config.settings import settings
 
 
-async def _project_resources(db: AsyncSession, project: str) -> set[str]:
-    result = await db.execute(
+async def _project_employee_ids(db: AsyncSession, project: str) -> set[str]:
+    """The JIN employee ids picked for the project's live integrations (credentialUser)."""
+    linked = await db.execute(
         text(
-            'SELECT resources FROM public."Credential" '
-            'WHERE "projectName" = :project AND NOT "isDeleted"'
+            'SELECT cu."employeeId" FROM public."credentialUser" cu '
+            'JOIN public."Credential" c ON c.id = cu."credentialId" '
+            'WHERE c."projectName" = :project AND NOT c."isDeleted"'
         ),
         {"project": project},
     )
-    return {r for (resources,) in result for r in resources or [] if r}
+    return {employee_id for (employee_id,) in linked if employee_id}
 
 
 async def _resource_member_ids(db: AsyncSession, project: str) -> set[str]:
-    resources = await _project_resources(db, project)
-    if not resources:
+    employee_ids = await _project_employee_ids(db, project)
+    if not employee_ids:
         return set()
     result = await db.execute(
         text(
-            'SELECT id FROM public."User" WHERE lower("azureObjectId") IN :ids'
+            'SELECT id FROM public."User" WHERE lower("jinEmployeeId") IN :ids'
         ).bindparams(bindparam("ids", expanding=True)),
-        {"ids": sorted(r.lower() for r in resources)},
+        {"ids": sorted(r.lower() for r in employee_ids)},
     )
     return {str(uid) for (uid,) in result}
 

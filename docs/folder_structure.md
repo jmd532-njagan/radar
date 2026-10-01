@@ -64,7 +64,8 @@ radar/
 │   │                                 # tool or a platform, how to verify
 │   ├── dev-env.md                    # Clone → running, admin, connecting a project
 │   ├── error-corpus-review.md        # The masker's output on 345 real platform errors
-│   └── folder_structure.md           # This file
+│   ├── folder_structure.md           # This file
+│   └── watchtowerchanges.md          # Every change RADAR's branch makes to WatchTower
 ├── evals/, xyz/                      # Gitignored, local-only (maintainers' evals and notes)
 ├── .env.example                      # The environment values the app needs
 ├── Dockerfile, docker-compose.yml
