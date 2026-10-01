@@ -2,68 +2,71 @@
 
 ```
 radar/
-├── src/                            # The application
-│   ├── main.py                     # FastAPI app, lifespan (DB/Redis/concurrency-cap setup)
+├── src/                              # The application
+│   ├── main.py                       # FastAPI app: lifespan (DB, model warm-up), HTTP
+│   │                                 # middleware (security headers, rate limiting), routers
 │   │
 │   ├── config/
-│   │   ├── settings.py             # All configuration, loaded from .env
-│   │   └── error_categories.py     # Canonical error categories + the human-action-only subset
+│   │   └── settings.py               # Secrets/DB address from .env (all required) + every tunable value
 │   │
-│   ├── db/
-│   │   ├── models.py                # SQLAlchemy models — single source of schema truth
-│   │   └── rca.py                   # ProjectRCA read/write logic — plain queries, platform-agnostic
-│   │
-│   ├── gateway/
-│   │   ├── rbac.py                 # RBACGateway (the enforcement) + call_tool (routes in-process vs. remote)
-│   │   ├── tool_exec_auth.py       # Service-identity JWT for chat-backend <-> server.py
-│   │   ├── credential_resolution.py # client_secret resolution from WatchTower's public.Credential
-│   │   └── concurrency.py          # DistributedSemaphore — Redis-backed, shared across replicas
+│   ├── db/                           # Plain queries, no LLM concepts
+│   │   ├── models.py                 # SQLAlchemy models — single source of schema truth
+│   │   ├── projects.py               # ProjectMetadata created on demand (no manual seeding)
+│   │   ├── failure_patterns.py       # Failure-pattern matching, history, updates, CATEGORIES
+│   │   ├── project_memory.py         # Project memory facts
+│   │   └── sop.py                    # Active SOP per project, replacing it, its chunks
 │   │
 │   ├── intake/
-│   │   ├── listener.py             # POST /events/pipeline-failure — WatchTower's entry point
-│   │   └── batch_detection.py      # Built, currently unused (batch alerting switched off)
+│   │   ├── listener.py               # POST /events/pipeline-failure: verify, parse, match pattern, store, notify
+│   │   └── signature.py              # Platform-neutral failure signatures (per-platform parser + shared masker)
 │   │
-│   ├── mcp_servers/adf/
-│   │   ├── tools/                  # ADF tool implementations (the shared TOOL_REGISTRY)
-│   │   ├── schemas/                # 66-distinct-tool declarative specs, one file per resource kind
-│   │   ├── tool_search_tool.py     # Keyword-based tool retrieval + build_chat_tools (real FunctionTool wiring)
-│   │   └── auth.py                 # Azure credential construction
+│   ├── chat/                         # The chat API — the only diagnosis path
+│   │   ├── router.py                 # FastAPI endpoints (chat turns stream over SSE)
+│   │   ├── service.py                # Business logic behind each endpoint
+│   │   ├── access.py                 # Who the caller is (X-Radar-Assertion) and what they may do
+│   │   ├── admin.py                  # Admin dashboard reads (/chat/admin/*): usage, cost, members, by project/user
+│   │   ├── memory.py                 # Project Memory panel: facts, patterns, SOP upload
+│   │   ├── notification.py           # A new failure's seed message + who to notify
+│   │   └── summarization.py          # Context-window compaction for long threads
 │   │
-│   ├── notifications/
-│   │   ├── messages.py             # Notification body text (one template, not per-outcome)
-│   │   └── email.py                # Delivery via Microsoft Graph's sendMail
+│   ├── llm/                          # The agent and what it knows
+│   │   ├── agent.py                  # The streamed chat turn: prompt, guardrail, approval pause/resume
+│   │   ├── client.py                 # The Azure OpenAI client; cost estimate + one usage row per LLM call
+│   │   ├── tools.py                  # The tools a turn gets: memory + SOP + the platform's tools
+│   │   ├── investigation_state.py    # Everything a turn needs, rebuilt from DB rows
+│   │   ├── embeddings.py             # Local bge-base embedding model
+│   │   ├── injection_detection.py    # Prompt-injection check (user messages and tool output)
+│   │   ├── memory/
+│   │   │   └── tools.py              # get_failure_patterns, propose_failure_pattern, propose_memory
+│   │   └── sop/
+│   │       ├── parser.py             # .docx → heading-path chunks (defusedxml; template lines stripped)
+│   │       ├── ingest.py             # Upload: parse, embed, LLM extraction into proposals, warnings
+│   │       ├── search.py             # Hybrid BM25 + cosine (RRF), in memory
+│   │       └── tools.py              # search_sop
 │   │
-│   ├── llm/                        # Platform-agnostic agent domain logic — tool-calling, state, execution
-│   │   ├── agent.py                # The conversational LLM turn (run/resume, approval handling)
-│   │   ├── tools.py                # Generic RCA tools (db/rca.py-backed) + build_tools_for_platform dispatcher
-│   │   ├── state.py / state_builder.py  # Shared state shape + reconstructing it from DB rows
-│   │   └── context.py              # Per-call dependencies (DB factory, Redis)
+│   ├── gateway/                      # Every platform tool call passes through here
+│   │   ├── rbac.py                   # call_tool: permission check, audit row, credentials, dispatch
+│   │   └── credential_resolution.py  # A project's ADF connection + decrypted client_secret
 │   │
-│   ├── chat/                       # Conversational transport — the only diagnosis path
-│   │   ├── router.py               # FastAPI endpoints
-│   │   ├── service.py              # Business logic behind each endpoint
-│   │   ├── thread_setup.py         # Creates the thread + seed message + notification at intake time
-│   │   ├── seed_message.py         # The templated (non-LLM) first-message text
-│   │   ├── history.py              # Converts stored messages → LLM input format
-│   │   ├── summarization.py        # Context-window compaction for long threads
-│   │   └── access.py / deps.py     # Auth/authorization checks
-│   │
-│   └── server.py                   # Separate deployable (own VM/subnet) — POST /tools/{tool_name}/call,
-│                                    # runs the SAME RBACGateway; never imported by main.py
+│   └── platform_tools/               # One tool set per data platform
+│       └── adf/
+│           ├── tools/                # 44 tool functions, one file per resource kind (TOOL_REGISTRY)
+│           ├── schemas/              # Their LLM-facing specs, one file per resource kind
+│           ├── tool_search_tool.py   # Picks the tools relevant to a message + builds FunctionTools
+│           └── client_cache.py       # Per-project Azure SDK client cache
 │
-├── prisma/                          # This repo's own Prisma schema/migrations for the "radar"
-│                                    # Postgres schema (moved from watch-Tower 2026-08-04 — see
-│                                    # schema.prisma's header comment). `npm install && npx prisma
-│                                    # migrate deploy` to apply.
-├── tests/                          # pytest suite
-├── claude-desktop/                 # Standalone R&D tool exploring MCP + checkpoint/rollback —
-│                                    # separate venv, not part of src/, source for the future ADF tool port
-├── xyz/                             # Gitignored — local-only scratch/notes, not present in a fresh
-│                                    # clone. Design-doc archive + working notes; see docs/architecture.md
-│                                    # for the tracked, team-facing version of this content.
-│
-├── docker-compose.yml
-├── Dockerfile
-├── alembic.ini.retired
-└── pyproject.toml
+├── prisma/                           # Prisma schema + migrations for the "radar" Postgres schema
+│                                     # (`npx prisma migrate deploy` to apply)
+├── tests/                            # pytest, mirrors src/: chat/, config/, gateway/, intake/,
+│                                     # llm/, platform_tools/adf/; conftest.py = shared fixtures
+├── docs/
+│   ├── claude.md                     # Read-first guide for AI assistants: rules, how to add a
+│   │                                 # tool or a platform, how to verify
+│   ├── dev-env.md                    # Clone → running, admin, connecting a project
+│   ├── error-corpus-review.md        # The masker's output on 345 real platform errors
+│   └── folder_structure.md           # This file
+├── evals/, xyz/                      # Gitignored, local-only (maintainers' evals and notes)
+├── .env.example                      # The environment values the app needs
+├── Dockerfile, docker-compose.yml
+└── pyproject.toml, uv.lock
 ```

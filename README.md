@@ -59,24 +59,24 @@ uv run python -m uvicorn main:app --reload --app-dir src
 
 Or via Docker: `docker compose up --build`.
 
-Full setup details (Postgres schema, linting/formatting, the optional standalone
-tool-execution service): [`docs/dev-env.md`](docs/dev-env.md).
+Full setup from a fresh clone (WatchTower first, admin, connecting a project): [`docs/dev-env.md`](docs/dev-env.md).
 
 ## Tech stack
 
-FastAPI · SQLAlchemy (async) · Redis · OpenAI Agents SDK · Azure SDKs — full detail in
-[`docs/technology.md`](docs/technology.md).
+FastAPI · SQLAlchemy (async, asyncpg) · OpenAI Agents SDK on Azure OpenAI gpt-4o · Azure SDKs
+(`azure-identity`, `azure-mgmt-datafactory`) · local `BAAI/bge-base-en-v1.5` embeddings
+(sentence-transformers) · Prisma for the `radar` schema's migrations · uv, ruff, pytest.
 
 ## Current status
 
-**Built and working:** event ingestion with HMAC signature verification, credential resolution straight from WatchTower's own encrypted `Credential` table (no Key Vault), authentication via a WatchTower-minted signed assertion (RADAR deliberately delegates SSO to WatchTower's own Entra ID integration rather than performing OIDC itself), the full chat/RBAC/audit data model, a distributed Redis-backed concurrency cap, the full 44-tool ADF set with correctly seeded `rbac_permissions` (`allowed`/`requires_consent` per tool), and the chat consent/approval flow via the OpenAI Agents SDK's native tool-approval mechanism.
+**Built and working:** event ingestion with HMAC signature verification, credential resolution straight from WatchTower's own encrypted `Credential` table (no Key Vault), authentication via a WatchTower-minted signed assertion (RADAR deliberately delegates SSO to WatchTower's own Entra ID integration rather than performing OIDC itself), the full chat/RBAC/audit data model, a per-caller rate limit (in-process; RADAR runs as one process), failure patterns, project memory and SOP upload + search, the full 44-tool ADF set with correctly seeded `rbac_permissions` (`allowed`/`requires_consent` per tool), and the chat consent/approval flow via the OpenAI Agents SDK's native tool-approval mechanism.
 
-**Not yet built:** the SOP vector store and the frontend UI. A sandboxed tool-dispatch boundary was considered and deprioritized — see [`docs/architecture.md`](docs/architecture.md)'s "Known gaps" for the reasoning (private-VM deployment + existing injection detection + human approval on mutating calls cover most of the risk; the remaining supply-chain vector is judged low-likelihood for now).
+**Not yet built:** a sandboxed tool-dispatch boundary (considered and deprioritized: private-VM deployment, injection detection and human approval on mutating calls cover most of the risk).
 
-Full architecture detail: [`docs/architecture.md`](docs/architecture.md) — data flow, credential/RBAC model, data model, tool-calling and rerun-approval flow, and the complete "Known gaps" list.
+How it fits together, the rules for changing it and how to add a platform: [`docs/claude.md`](docs/claude.md).
 
 ## Next development steps
 
-1. **SOP vector store** — ingest/embed project SOP docs so the agent can ground answers in them.
-2. **Least-privilege DB/Redis service account** for the app's own connections — cheap, caps the blast radius of an in-process compromise without a full sandboxing project.
-3. **Later, larger, less time-sensitive:** frontend UI, Synapse/Databricks/Fabric platform support, and an approver-fallback mechanism for an unavailable thread claimant.
+1. **Re-check the tuned values on real traffic** — injection thresholds (guardrail scores are logged at DEBUG), SOP search and tool selection, once real chats exist.
+2. **Least-privilege DB service account** for the app's own connection — cheap, caps the blast radius of an in-process compromise without a full sandboxing project.
+3. **Later, larger, less time-sensitive:** Synapse/Databricks/Fabric platform support, and an approver-fallback mechanism for an unavailable thread claimant.
