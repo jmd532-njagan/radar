@@ -1,7 +1,11 @@
 """
-InvestigationState — the shape every chat turn needs, and the only code that builds it.
+InvestigationState — everything a chat turn needs, rebuilt from DB rows every turn (cheap,
+indexed lookups). The only code that builds it.
 
-Rebuilt fresh from DB rows every turn (cheap, all indexed lookups).
+Besides the failure itself it carries what RADAR already knows, loaded in code so the agent
+starts from it rather than having to ask: the project's active memory facts, the failure
+pattern this failure matched (with its history), the SOP sections most relevant to this failure,
+and the summary of the earlier conversation.
 """
 
 from datetime import datetime
@@ -10,131 +14,133 @@ from typing import TypedDict
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import ChatThread, Credential, FailureEvent, ProjectMetadata
+from config.settings import SOP_RESULTS_AT_FAILURE_START
+from db import failure_patterns, project_memory
+from db.models import ChatThread, FailureEvent, FailurePattern, ProjectMetadata
+from gateway.credential_resolution import get_adf_credential
+from intake.signature import summarize
+from llm.injection_detection import drop_flagged
+from llm.sop.search import search as search_sop
+
+# Sentinel pipeline_name for ad-hoc threads — gateway/rbac.py's call_tool and AuditLog both
+# require a non-null pipeline name, and a project-scoped conversation has no pipeline of its own.
+AD_HOC_PIPELINE_SENTINEL = "(ad-hoc)"
 
 
 class InvestigationState(TypedDict):
     investigation_id: str | None
-    # The real ChatThread.thread_id, passed explicitly to RBACGateway/AuditLog — every chat
-    # call needs its own real thread_id on the AuditLog row.
-    thread_id: str | None
+    thread_id: str | None  # passed to call_tool/AuditLog for every call
     project: str
     platform: str
     pipeline_name: str
     run_status: str
     start_time: datetime
-    end_time: datetime | None
-    last_error: str | None
-    error_detail: (
-        dict | None
-    )  # raw WatchTower payload; the chat agent enriches on demand via its own tool calls
+    # Parsed from the failure's signature (intake/signature.py).
+    error: str | None
+    error_code: str | None
+    pattern_id: int | None
+    # The failed activity and its run id, so the agent can go straight to the run.
+    failed_activity: str | None
+    activity_run_id: str | None
+    # How the failed run was started (e.g. ScheduleTrigger, Manual), as WatchTower reports it.
     trigger_type: str | None
-    thread_status: str  # "running" | "paused" | "failed" | "completed"
-    # --- non-secret factory identifiers, sourced from Credential (not a secret,
-    #     no Key Vault fetch needed — plain columns, safe in state) ---
+    # What's already known, loaded in code (see module docstring).
+    memory: list[dict]  # active project facts: {"kind", "text"}
+    pattern: dict | None  # the matched failure pattern, compact, with its history
+    sop: list[dict]  # SOP sections relevant to this failure: {"section", "text"}
+    summary: str | None  # summary of earlier turns (chat/summarization.py)
+    # Non-secret factory identifiers from the project's WatchTower integration;
+    # client_secret is never put in state.
     tenant_id: str | None
     client_id: str | None
     subscription_id: str | None
     resource_group: str | None
     factory_name: str | None
-    # --- set at intake-time notification (chat/thread_setup, called from intake/listener.py) ---
-    notify_sent: bool | None
 
 
-# Sentinel pipeline_name for ad-hoc threads — RBACGateway.call()/AuditLog both require a
-# non-null pipeline_id; there's no real pipeline for a project-scoped, not-failure-specific
-# conversation. Chosen to be visually distinct from any real ADF pipeline name.
-AD_HOC_PIPELINE_SENTINEL = "(ad-hoc)"
-
-
-def build_initial_state(
-    inv: FailureEvent, factory: Credential, thread_id: str | None = None
-) -> InvestigationState:
+async def _matched_pattern(db: AsyncSession, event: FailureEvent) -> dict | None:
+    if event.pattern_id is None:
+        return None
+    pattern = await db.get(FailurePattern, event.pattern_id)
+    past = await failure_patterns.history(db, pattern.id, event.investigation_id)
     return {
-        "investigation_id": inv.investigation_id,
-        "thread_id": thread_id,
-        "project": inv.project,
-        "platform": inv.platform,
-        "pipeline_name": inv.pipeline_name,
-        "run_status": inv.run_status,
-        "start_time": inv.start_time,
-        "end_time": inv.end_time,
-        "last_error": inv.last_error,
-        "error_detail": inv.error_detail,
-        "trigger_type": inv.trigger_type,
-        "thread_status": "running",
-        "tenant_id": factory.tenant_id,
-        "client_id": factory.client_id,
-        "subscription_id": factory.subscription_id,
-        "resource_group": factory.resource_group,
-        "factory_name": factory.factory_name,
-        "notify_sent": None,
+        "id": f"FP-{pattern.id}",
+        "status": pattern.status,
+        "cause": pattern.cause,
+        "verify_with": pattern.verify_with,
+        "fix_actions": pattern.fix_actions,
+        "seen_before": past.seen_before,
+        "last_fixed": past.last_fixed,
     }
 
 
-async def get_credential(db, project: str) -> Credential | None:
-    """A project has exactly one platform instance, so the first matching row is the right one."""
-    result = await db.execute(select(Credential).where(Credential.project == project))
-    return result.scalars().first()
-
-
 async def build_chat_state(db: AsyncSession, thread: ChatThread) -> InvestigationState:
-    if thread.investigation_id is not None:
-        return await _build_failure_triggered_state(db, thread)
-    return await _build_ad_hoc_state(db, thread)
-
-
-async def _build_failure_triggered_state(
-    db: AsyncSession, thread: ChatThread
-) -> InvestigationState:
-    inv = await db.get(FailureEvent, thread.investigation_id)
-    if inv is None:
-        raise RuntimeError(
-            f"ChatThread {thread.thread_id} points at a missing FailureEvent"
-        )
-    factory = await get_credential(db, inv.project)
+    """Failure-triggered threads carry the failure; ad-hoc threads get sentinel values that
+    llm/agent.py's prompt builder handles."""
+    factory = await get_adf_credential(db, thread.project)
     if factory is None:
-        raise RuntimeError(f"credentials row missing for project='{inv.project}'")
+        raise RuntimeError(f"No ADF integration found for project='{thread.project}'")
 
-    return build_initial_state(inv, factory, thread_id=thread.thread_id)
-
-
-async def _build_ad_hoc_state(
-    db: AsyncSession, thread: ChatThread
-) -> InvestigationState:
-    """
-    No FailureEvent to source failure-specific fields from — pipeline_name/run_status/
-    error_detail etc. are deliberately absent/sentinel. llm/agent.py's own system-prompt
-    builder must tolerate this shape.
-    """
-    factory = await get_credential(db, thread.project)
-    if factory is None:
-        raise RuntimeError(f"credentials row missing for project='{thread.project}'")
-
-    platform_result = await db.execute(
-        select(ProjectMetadata.platform).where(
-            ProjectMetadata.project == thread.project
-        )
+    event = (
+        await db.get(FailureEvent, thread.investigation_id)
+        if thread.investigation_id
+        else None
     )
-    platform = platform_result.scalar_one_or_none()
+    sig = event.signature if event else None
+    detail = (event.error_detail if event else None) or {}
+    platform = (
+        event.platform
+        if event
+        else (
+            await db.execute(
+                select(ProjectMetadata.platform).where(
+                    ProjectMetadata.project == thread.project
+                )
+            )
+        ).scalar_one_or_none()
+    )
+    facts = await project_memory.list_facts(db, thread.project)
+    error = (
+        (summarize(sig["template"], sig["values"]) if sig else event.last_error)
+        if event
+        else None
+    )
+    failed_activity = detail.get("failed_activity_name")
+    sop = (
+        await drop_flagged(
+            await search_sop(
+                db,
+                thread.project,
+                " ".join(filter(None, [event.pipeline_name, failed_activity, error])),
+                k=SOP_RESULTS_AT_FAILURE_START,
+            ),
+            source="SOP at failure start",
+        )
+        if event
+        else []
+    )
 
     return {
-        "investigation_id": None,
+        "investigation_id": thread.investigation_id,
         "thread_id": thread.thread_id,
         "project": thread.project,
         "platform": platform or "unknown",
-        "pipeline_name": AD_HOC_PIPELINE_SENTINEL,
-        "run_status": "n/a",
-        "start_time": thread.created_at,
-        "end_time": None,
-        "last_error": None,
-        "error_detail": None,
-        "trigger_type": None,
-        "thread_status": "running",
+        "pipeline_name": event.pipeline_name if event else AD_HOC_PIPELINE_SENTINEL,
+        "run_status": event.run_status if event else "n/a",
+        "start_time": event.start_time if event else thread.created_at,
+        "error": error,
+        "error_code": sig["code"] if sig else None,
+        "pattern_id": event.pattern_id if event else None,
+        "failed_activity": failed_activity,
+        "activity_run_id": detail.get("failed_activity_run_id"),
+        "trigger_type": event.trigger_type if event else None,
+        "memory": [{"kind": f.kind, "text": f.text} for f in facts],
+        "pattern": await _matched_pattern(db, event) if event else None,
+        "sop": sop,
+        "summary": thread.context_summary,
         "tenant_id": factory.tenant_id,
         "client_id": factory.client_id,
         "subscription_id": factory.subscription_id,
         "resource_group": factory.resource_group,
         "factory_name": factory.factory_name,
-        "notify_sent": None,
     }
