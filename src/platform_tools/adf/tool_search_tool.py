@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from config.settings import ADF_TOOLS_PER_TURN
 from db.models import RBACPermission
-from gateway.rbac import call_tool, infra_params, set_platform_context
+from gateway.rbac import call_tool, infra_params
 from llm.embeddings import cosine_similarity, embed_texts, embed_texts_async
 from llm.injection_detection import detect_injection_in_content
 from llm.investigation_state import InvestigationState
@@ -393,7 +393,6 @@ async def build_chat_tools(
         # Platform filter is defense-in-depth: every real row here is platform="adf", so if
         # this ADF-specific builder were ever invoked for a non-ADF thread, this returns zero
         # rows instead of leaking ADF tools into an unrelated platform's chat.
-        await set_platform_context(db, state["platform"])
         rbac_result = await db.execute(
             select(RBACPermission).where(RBACPermission.platform == state["platform"])
         )

@@ -7,7 +7,7 @@ import asyncio
 import logging
 
 from azure.core.exceptions import ClientAuthenticationError
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import AuditLog, RBACPermission
@@ -16,27 +16,6 @@ from llm.investigation_state import InvestigationState
 from platform_tools.adf import client_cache, tools as adf_tools
 
 logger = logging.getLogger(__name__)
-
-
-async def set_platform_context(db, platform: str) -> None:
-    """Sets the session GUC the rbac_permissions RLS policy checks against. set_config(...,
-    true) is Postgres's parameter-bindable equivalent of `SET LOCAL` (plain SET doesn't accept
-    bind parameters, only a literal), and is transaction-scoped, so it clears itself at the
-    end of this session's transaction.
-
-    Best-effort, deliberately swallows failures: sqlite (the test fixture) has no set_config
-    at all, and some hand-rolled test doubles don't accept a params dict — neither should
-    block the actual enforcement (the platform-scoped permission query), which runs regardless.
-    """
-    try:
-        await db.execute(
-            text("SELECT set_config('app.current_platform', :platform, true)"),
-            {"platform": platform},
-        )
-    except Exception:
-        logger.debug(
-            "set_platform_context: skipped (unsupported by this session)", exc_info=True
-        )
 
 
 def infra_params(state: "dict | InvestigationState") -> dict:
@@ -69,12 +48,7 @@ async def call_tool(
     # requires_consent is enforced by the Agents SDK's tool-approval pause before this runs;
     # this check is an independent gate (defense in depth).
     #
-    # The permission query is platform-scoped directly rather than relying solely on the
-    # rbac_permissions RLS policy, which is a no-op since the app connects as a Postgres
-    # superuser (unconditionally bypasses RLS) — without this, a tool_name collision between
-    # two platforms would read the wrong platform's row. set_platform_context stays as the
-    # DB-level layer for once the connection role is fixed.
-    await set_platform_context(db, platform)
+    # The query is platform-scoped: two platforms may each have a tool of the same name.
     allowed = await db.scalar(
         select(RBACPermission.allowed).where(
             RBACPermission.tool_name == tool_name, RBACPermission.platform == platform

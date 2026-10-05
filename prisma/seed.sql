@@ -1,4 +1,5 @@
--- What prisma/schema.prisma can't express, applied after the tables exist:
+-- What prisma/schema.prisma can't express (CHECKs, a partial index, foreign keys into
+-- WatchTower's public schema, tool permissions), applied after the tables exist:
 --   npx prisma migrate dev --name init                  (tables, from the schema)
 --   npx prisma db execute --file prisma/seed.sql --schema prisma/schema.prisma
 -- Safe to run again: existing constraints are skipped and existing rows are left as they are.
@@ -49,6 +50,43 @@ END $$;
 -- At most one active SOP per project.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_sop_documents_one_active
   ON radar.sop_documents (project) WHERE status = 'active';
+
+-- Foreign keys to WatchTower's users (cross-schema, so Prisma can't declare them).
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'audit_log_user_id_fkey') THEN
+    ALTER TABLE radar.audit_log ADD CONSTRAINT audit_log_user_id_fkey FOREIGN KEY (user_id)
+      REFERENCES public."User"(id) ON UPDATE CASCADE ON DELETE SET NULL;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chat_analytics_user_id_fkey') THEN
+    ALTER TABLE radar.chat_analytics ADD CONSTRAINT chat_analytics_user_id_fkey FOREIGN KEY (user_id)
+      REFERENCES public."User"(id) ON UPDATE CASCADE ON DELETE SET NULL;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chat_threads_claimed_by_user_id_fkey') THEN
+    ALTER TABLE radar.chat_threads ADD CONSTRAINT chat_threads_claimed_by_user_id_fkey FOREIGN KEY (claimed_by_user_id)
+      REFERENCES public."User"(id) ON UPDATE CASCADE ON DELETE SET NULL;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'failure_patterns_approved_by_fkey') THEN
+    ALTER TABLE radar.failure_patterns ADD CONSTRAINT failure_patterns_approved_by_fkey FOREIGN KEY (approved_by)
+      REFERENCES public."User"(id) ON UPDATE CASCADE ON DELETE SET NULL;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'message_feedback_user_id_fkey') THEN
+    ALTER TABLE radar.message_feedback ADD CONSTRAINT message_feedback_user_id_fkey FOREIGN KEY (user_id)
+      REFERENCES public."User"(id) ON UPDATE CASCADE ON DELETE CASCADE;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'project_memory_approved_by_fkey') THEN
+    ALTER TABLE radar.project_memory ADD CONSTRAINT project_memory_approved_by_fkey FOREIGN KEY (approved_by)
+      REFERENCES public."User"(id) ON UPDATE CASCADE ON DELETE SET NULL;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'project_memory_created_by_fkey') THEN
+    ALTER TABLE radar.project_memory ADD CONSTRAINT project_memory_created_by_fkey FOREIGN KEY (created_by)
+      REFERENCES public."User"(id) ON UPDATE CASCADE ON DELETE SET NULL;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'sop_documents_uploaded_by_fkey') THEN
+    ALTER TABLE radar.sop_documents ADD CONSTRAINT sop_documents_uploaded_by_fkey FOREIGN KEY (uploaded_by)
+      REFERENCES public."User"(id) ON UPDATE CASCADE ON DELETE SET NULL;
+  END IF;
+END $$;
 
 -- Tool permissions. A tool with no row here is invisible to the agent; requires_consent
 -- makes it pause for a human's approval (every tool that changes anything).
