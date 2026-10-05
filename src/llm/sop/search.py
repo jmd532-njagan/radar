@@ -113,11 +113,24 @@ async def search(
     project: str,
     query: str,
     k: int = SOP_SEARCH_RESULTS,
+    must_mention: str | None = None,
 ) -> list[dict]:
-    """The k most relevant SOP sections for the query, best first: [{"section", "text"}]."""
+    """The k most relevant SOP sections for the query, best first: [{"section", "text"}].
+
+    must_mention: return nothing unless some section names this term (case-insensitive). A
+    similarity floor can't tell a relevant section from an unrelated one here — on the SOP
+    eval the right section scores 0.46-0.80 cosine while failures no SOP covers still reach
+    0.51-0.62 — but whether the SOP names the failed pipeline at all does."""
     index = await _index(db, project)
     if index is None or not query.strip():
         return []
+    if must_mention:
+        term = must_mention.casefold()
+        if not any(
+            term in f"{section} {text}".casefold()
+            for section, text in zip(index.sections, index.texts, strict=True)
+        ):
+            return []
     query_vector = (await embed_texts_async([query], query=True))[0]
     return [
         {"section": index.sections[i], "text": index.texts[i]}

@@ -1,8 +1,11 @@
 """llm/sop/parser.py on small synthetic .docx files."""
 
+import asyncio
 import io
 import zipfile
+from unittest.mock import AsyncMock, patch
 
+import numpy as np
 import pytest
 
 from llm.sop.parser import parse
@@ -102,3 +105,39 @@ def test_long_section_splits_at_line_boundaries():
 def test_not_a_docx():
     with pytest.raises(ValueError):
         parse(b"not a zip")
+
+
+def test_failure_start_sop_sections_need_the_pipeline_named():
+    from types import SimpleNamespace
+
+    from llm.sop import search
+
+    rows = [
+        SimpleNamespace(
+            heading_path="RCA > SFTP",
+            text="PL_Investment_Metrics_Ingestion fails when the SFTP file is late.",
+            embedding=[1.0, 0.0],
+        ),
+        SimpleNamespace(
+            heading_path="Contacts", text="Escalate to the EM.", embedding=[0.0, 1.0]
+        ),
+    ]
+    index = search.build_index(1, rows)
+
+    async def run(term):
+        with (
+            patch.object(search, "_index", AsyncMock(return_value=index)),
+            patch.object(
+                search,
+                "embed_texts_async",
+                AsyncMock(return_value=np.array([[1.0, 0.0]], dtype=np.float32)),
+            ),
+        ):
+            return await search.search(
+                None, "p", "sftp file missing", k=3, must_mention=term
+            )
+
+    assert [h["section"] for h in asyncio.run(run("pl_investment_metrics_ingestion"))][
+        0
+    ] == "RCA > SFTP"
+    assert asyncio.run(run("pl_unrelated_pipeline")) == []

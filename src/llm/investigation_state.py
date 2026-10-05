@@ -113,6 +113,9 @@ async def build_chat_state(db: AsyncSession, thread: ChatThread) -> Investigatio
                 thread.project,
                 " ".join(filter(None, [event.pipeline_name, failed_activity, error])),
                 k=SOP_RESULTS_AT_FAILURE_START,
+                # Added to every prompt unasked, so only when the SOP covers this pipeline;
+                # the agent can still search the SOP itself.
+                must_mention=event.pipeline_name,
             ),
             source="SOP at failure start",
         )

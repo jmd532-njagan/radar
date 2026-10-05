@@ -3,6 +3,7 @@ Business logic behind every chat endpoint — router.py is a thin translation la
 """
 
 import logging
+import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 
@@ -387,6 +388,8 @@ async def _persist_turn_result(
     triggering_message: str,
     user_id: str | None,
     state: dict,
+    first_token_ms: int | None = None,
+    total_ms: int | None = None,
 ) -> ChatMessage | None:
     """Persists a finished turn as the assistant's ChatMessage and returns it, or — for a turn
     paused on a tool approval — stores the paused state in thread.pending_tool_approval and
@@ -454,13 +457,16 @@ async def _persist_turn_result(
     await db.commit()
     await db.refresh(assistant_message)
     logger.info(
-        "Turn done: thread=%s project=%s tools=%s tokens in=%s cached=%s out=%s",
+        "Turn done: thread=%s project=%s tools=%s tokens in=%s cached=%s out=%s "
+        "first_token_ms=%s total_ms=%s",
         thread.thread_id,
         state["project"],
         [f"{t['name']}:{t['status']}" for t in turn_result.tool_calls or []],
         turn_result.input_tokens,
         turn_result.cached_tokens,
         turn_result.output_tokens,
+        first_token_ms,
+        total_ms,
     )
     return assistant_message
 
@@ -653,14 +659,26 @@ async def _stream_and_persist(
     result, and ends with {"type": "message"} (turn finished or stopped) or
     {"type": "pending_approval"} (paused on a tool approval)."""
     turn_result = None
+    # Time to first token: how long the user waits before the reply starts appearing (tool
+    # calls before it count). Logged with the turn.
+    started, first_token_ms = time.monotonic(), None
     async for event in agent_stream:
+        if event["type"] == "token" and first_token_ms is None:
+            first_token_ms = round((time.monotonic() - started) * 1000)
         if event["type"] in ("token", "tool_call"):
             yield event
         else:
             turn_result = event["result"]
 
     message = await _persist_turn_result(
-        db, thread, turn_result, triggering_message, user_id=user_id, state=state
+        db,
+        thread,
+        turn_result,
+        triggering_message,
+        user_id=user_id,
+        state=state,
+        first_token_ms=first_token_ms,
+        total_ms=round((time.monotonic() - started) * 1000),
     )
     if message is None:
         yield {"type": "pending_approval", "pending_tools": turn_result.pending_tools}
