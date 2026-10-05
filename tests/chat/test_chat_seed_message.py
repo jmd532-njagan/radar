@@ -26,7 +26,7 @@ def _event() -> FailureEvent:
 def test_first_occurrence_is_readable_and_drops_the_wrapper_noise():
     text = build_seed_message(_event(), None, None)
     assert text.startswith(
-        "`pl_copy_customers` failed at 25 Sep 17:24 UTC: Column 'ID' specified in column mapping "
+        "`pl_copy_customers` failed at 25 Sep 22:54 IST: Column 'ID' specified in column mapping "
         "cannot be found in 'mcp_test/customers.csv' source file"
     )
     assert "HybridDeliveryException" not in text
@@ -52,5 +52,5 @@ def test_known_pattern_without_diagnosis_and_no_signature():
     text = build_seed_message(
         event, FailurePattern(id=4, fix_actions=[]), PatternHistory(1, None, None)
     )
-    assert "failed at 25 Sep 17:24 UTC: Something broke" in text
+    assert "failed at 25 Sep 22:54 IST: Something broke" in text
     assert "seen 1× before, no diagnosis recorded yet." in text

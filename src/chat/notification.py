@@ -21,6 +21,7 @@ its investigation_id.
 """
 
 import logging
+from datetime import timedelta, timezone
 
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
@@ -29,6 +30,9 @@ from db import failure_patterns
 from db.failure_patterns import PatternHistory
 from db.models import AuditLog, FailureEvent, FailurePattern
 from intake.signature import summarize
+
+# India Standard Time: a fixed +05:30 (no daylight saving), so no time-zone database needed.
+IST = timezone(timedelta(hours=5, minutes=30), "IST")
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +48,9 @@ def build_seed_message(
         if sig
         else event.last_error or "no error message"
     )
-    failed_at = (event.end_time or event.start_time).strftime("%d %b %H:%M UTC")
+    failed_at = (
+        (event.end_time or event.start_time).astimezone(IST).strftime("%d %b %H:%M IST")
+    )
     lines = [f"`{event.pipeline_name}` failed at {failed_at}: {error}"]
 
     if pattern is not None and past is not None and past.seen_before:
