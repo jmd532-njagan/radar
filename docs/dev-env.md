@@ -8,7 +8,7 @@ then connect a project.
 ## What you need
 
 - **Python 3.12+** and [uv](https://docs.astral.sh/uv/)
-- **Node 18+** and npm (WatchTower, and the Prisma CLI that applies RADAR's migrations)
+- **Node 18+** and npm (WatchTower, and the Prisma CLI that creates RADAR's tables)
 - **PostgreSQL** that both apps can reach
 - An **Azure OpenAI** gpt-4o deployment (endpoint, deployment name, key)
 - WatchTower's **Entra ID app registration** values, with `http://localhost:3000/callback`
@@ -74,9 +74,16 @@ uv sync --all-groups             # Python deps, including dev tools (pytest, ruf
 uv run lefthook install          # git hooks: ruff format + lint on commit
 npm install                      # the Prisma CLI only; RADAR's code is all Python
 cp .env.example .env             # fill in, see below
-npx prisma migrate deploy        # creates RADAR's tables in the "radar" schema
+npx prisma migrate dev --name init   # creates a migration from prisma/schema.prisma and applies it
+npx prisma db execute --file prisma/seed.sql --schema prisma/schema.prisma   # tool permissions + DB rules
 uv run python -m uvicorn main:app --reload --app-dir src     # http://localhost:8000
 ```
+
+**Migrations aren't committed.** On a **new** database the two `prisma` commands above create
+everything. On a database that **already has RADAR's tables** (yours, a teammate's, production),
+don't run `prisma migrate dev`: it sees migration history the repo no longer has and offers to
+reset the database, wiping its data. Apply schema changes there with `npx prisma db push`, then
+run the seed command, and never accept a reset prompt.
 
 Or use Docker: `docker compose up --build` (still needs `.env` and the migration step).
 

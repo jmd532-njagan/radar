@@ -167,7 +167,9 @@ Chat turns stream back as Server-Sent Events.
 ## 4. Data model
 
 RADAR's tables are in the Postgres schema `radar`. `db/models.py` is what the app runs against;
-`prisma/schema.prisma` + `prisma/migrations/` is the DDL history. They must agree.
+`prisma/schema.prisma` is the DDL (migrations are generated from it per environment and not
+committed), and `prisma/seed.sql` adds what the schema can't express: tool permissions, CHECK
+constraints, the partial index. The models, the schema and the seed must agree.
 
 | Table | What it holds |
 |---|---|
@@ -371,7 +373,7 @@ Don't log inside loops or on reads, and never log secrets or whole messages.
    params_json_schema)` with the same name. Don't put credentials in the schema. Mutating tools
    take a `reason` (`REASON_PROP`), which is shown to the approver. Write the description for
    retrieval: what it does, when to use it, and how it differs from its neighbours.
-3. **Permission row** in a new migration:
+3. **Permission row** in `prisma/seed.sql` (and run the seed):
    `INSERT INTO radar.rbac_permissions (platform, tool_name, allowed, requires_consent) VALUES
    ('adf', '<name>', true, <true if it changes anything>);`
 4. **Tests** in `tests/platform_tools/adf/`: the function (SDK mocked), and that representative
@@ -380,13 +382,14 @@ Don't log inside loops or on reads, and never log secrets or whole messages.
 ### Add or change a table or column
 1. Edit `db/models.py`.
 2. Mirror it in `prisma/schema.prisma`.
-3. Add `prisma/migrations/<yyyymmddhhmmss>_<snake_name>/migration.sql` with explicit SQL
-   (schema-qualified `radar.`). Include backfills and constraints (CHECK constraints for enums,
-   FKs to `project_metadata`).
-4. Apply with `npx prisma migrate deploy`, check the live schema matches the models, and run the
-   tests.
+3. Add any CHECK constraint (enum-like column, length limit) or partial index to
+   `prisma/seed.sql`, guarded so it's safe to re-run.
+4. `npx prisma migrate dev --name <what_changed>` (generates and applies the migration locally;
+   add any data backfill to that migration by hand), then run the seed, check the live schema
+   matches the models, and run the tests.
 
-Never edit an applied migration, and never touch WatchTower's `public` tables.
+Migrations aren't committed: every environment generates its own from the schema. Never touch
+WatchTower's `public` tables.
 
 ### Add an LLM call
 Record its usage: `add_usage(db, response.usage, purpose=…, project=…, platform=…, user_id=…)`

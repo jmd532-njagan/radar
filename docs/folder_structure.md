@@ -55,8 +55,9 @@ radar/
 │           ├── tool_search_tool.py   # Picks the tools relevant to a message + builds FunctionTools
 │           └── client_cache.py       # Per-project Azure SDK client cache
 │
-├── prisma/                           # Prisma schema + migrations for the "radar" Postgres schema
-│                                     # (`npx prisma migrate deploy` to apply)
+├── prisma/                           # schema.prisma (the "radar" Postgres schema) + seed.sql (tool
+│                                     # permissions, CHECKs, partial index); migrations/ is generated
+│                                     # per environment and not committed (docs/dev-env.md)
 ├── tests/                            # pytest, mirrors src/: chat/, config/, gateway/, intake/,
 │                                     # llm/, platform_tools/adf/; conftest.py = shared fixtures
 ├── docs/

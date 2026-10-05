@@ -29,11 +29,12 @@ Thumbs.db
 *.log
 logs/
 
-claude-desktop/
 xyz/
 # tests/
-watch-Tower/
 node_modules/
+# Generated per environment from prisma/schema.prisma (see docs/dev-env.md); not committed.
+prisma/migrations/
+prisma/migrations/*.sql
 
 .ruff_cache/
 # ── Local-only: evals and internal design docs ────────────────────────────────
