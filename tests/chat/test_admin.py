@@ -42,7 +42,7 @@ def _cost(*purposes):
 
 
 async def _seed(db_factory) -> str:
-    """acme: alice assigned, carol a resource, bob nobody; one resolved and one open
+    """acme: alice and carol linked in credentialUser, bob nobody; one resolved and one open
     notification; one chat (alice's) with two messages, a thumbs up, two tool calls and a
     denial; usage rows of four purposes."""
     await _seed_project(
@@ -208,8 +208,6 @@ async def test_project(chat_client, chat_db_factory):
     assert (body["totals"]["chats"], body["totals"]["messages"]) == (1, 2)
 
     members = {m["user_id"]: m for m in body["members"]}
-    assert members[ALICE]["sources"] == ["assigned"]
-    assert members[CAROL]["sources"] == ["resource"]
     assert members[CAROL]["notify"] is True
     assert members[ALICE]["cost"] == pytest.approx(
         _cost("chat", "title", "sop_extraction")
@@ -267,11 +265,7 @@ async def test_users_and_user(chat_client, chat_db_factory):
     )
     assert (body["totals"]["chats"], body["totals"]["messages"]) == (1, 2)
     (allocation,) = body["allocations"]
-    assert (allocation["project"], allocation["sources"], allocation["chats"]) == (
-        PROJECT,
-        ["assigned"],
-        1,
-    )
+    assert (allocation["project"], allocation["chats"]) == (PROJECT, 1)
     assert [c["thread_id"] for c in body["chats"]] == [thread_id]
 
     bad = await chat_client.get("/chat/admin/users/not-a-uuid", headers=headers)

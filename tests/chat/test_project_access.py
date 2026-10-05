@@ -2,7 +2,7 @@
 employee ids = User.jinEmployeeId), and on-demand ProjectMetadata for freshly integrated
 projects."""
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from conftest import seed_watchtower_integration
@@ -16,6 +16,7 @@ from test_chat_tool_approval import (
     user_id_for,
 )
 
+from chat import access
 from chat.access import notification_recipient_ids
 from db.models import ChatThread, ProjectMetadata
 
@@ -45,9 +46,13 @@ async def _add_user(
 
 
 def _resources(*values):
-    return patch(
-        "chat.access._project_employee_ids", new=AsyncMock(return_value=set(values))
-    )
+    """Adds these employee ids to the project's real credentialUser links (emails on)."""
+    original = access._project_employee_ids
+
+    async def linked(db, project):
+        return {**await original(db, project), **dict.fromkeys(values, True)}
+
+    return patch("chat.access._project_employee_ids", new=linked)
 
 
 @pytest.mark.asyncio
@@ -116,16 +121,16 @@ async def test_a_user_named_like_a_resource_is_not_a_member(
 
 
 @pytest.mark.asyncio
-async def test_recipients_include_resources_and_respect_manual_opt_out(chat_db_factory):
-    await _seed_project(chat_db_factory)  # alice, manually assigned, notify on
+async def test_recipients_are_members_with_emails_on(chat_db_factory):
+    await _seed_project(chat_db_factory)  # alice, linked in credentialUser, emails on
     await _add_user(chat_db_factory, RESOURCE, object_id=CAROL_OBJECT_ID)
     async with chat_db_factory() as db:
         await db.execute(
             text(
-                'UPDATE public."UserProjectAssignment" SET "notifyOnFailure" = 0 '
-                'WHERE "userId" = :uid'
+                'UPDATE public."credentialUser" SET "notifyOnFailure" = 0 '
+                'WHERE "employeeId" = :emp'
             ),
-            {"uid": user_id_for("alice@acme.com")},
+            {"emp": f"emp-{user_id_for('alice@acme.com')}"},
         )
         await db.commit()
 

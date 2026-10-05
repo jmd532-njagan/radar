@@ -128,15 +128,16 @@ add on the RADAR side. The project now appears under **RADAR AI** for:
   WatchTower at least once, or been loaded by the Azure user refresh);
 - admins, read-only.
 
-To add someone who isn't a resource, run this SQL:
+Resources get RADAR's emails (failure alerts, memory updates). To stop them for one person,
+without removing their access:
 
 ```sql
-INSERT INTO public."UserProjectAssignment" (id, "userId", "projectName", "notifyOnFailure")
-SELECT gen_random_uuid(), id, '<exact project name>', true
-FROM public."User" WHERE email = 'someone@jmangroup.com';
+UPDATE public."credentialUser" SET "notifyOnFailure" = false
+WHERE "employeeId" = (SELECT "jinEmployeeId" FROM public."User" WHERE email = 'someone@jmangroup.com')
+  AND "credentialId" IN (SELECT id FROM public."Credential" WHERE "projectName" = '<exact project name>');
 ```
 
-Members get the failure emails; set `notifyOnFailure = false` to opt one out.
+Editing the integration keeps each person's setting.
 
 ## 6. Try it
 
@@ -155,7 +156,7 @@ Members get the failure emails; set `notifyOnFailure = false` to opt one out.
 | Symptom | Cause |
 |---|---|
 | RADAR won't start: "Field required" / "must be set to a real value" | A value missing from RADAR's `.env` |
-| RADAR AI shows no projects | You're not a resource or assigned (step 5), or the project's `Credential` was deleted |
+| RADAR AI shows no projects | You're not picked as a resource (step 5), or the project's `Credential` was deleted |
 | 401 on every RADAR call | `RADAR_ASSERTION_SECRET` differs between the two `.env` files |
 | Failures never reach RADAR (401 in RADAR's log) | `HMAC_SECRET` ≠ WatchTower `RADAR_WEBHOOK_SECRET` |
 | "Failed to decrypt client_secret" | `WATCHTOWER_CREDENTIAL_KEY` ≠ WatchTower `JWT_SECRET_KEY` |

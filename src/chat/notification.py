@@ -11,7 +11,7 @@ HTTP. The `notification_ready` audit entry records that determination regardless
 WatchTower's send actually succeeds.
 
 Recipients are the project's members as chat/access.py defines them (manual
-UserProjectAssignment rows plus the resources picked in WatchTower's Integrations tab), read
+the people picked in WatchTower's Integrations tab, credentialUser, with notifyOnFailure on), read
 straight from WatchTower's own tables rather than kept as a separate copy that could drift.
 
 No ChatThread is created here. The seed text lives on FailureEvent.seed_message until a human
@@ -100,8 +100,8 @@ async def prepare_notification(
 
     if not recipient_user_ids:
         logger.warning(
-            "No project members to notify for project=%s (no UserProjectAssignment rows "
-            "with notifyOnFailure=true and no integration resources matching a WatchTower "
+            "No project members to notify for project=%s (no credentialUser links with "
+            "notifyOnFailure on to a WatchTower user with that jinEmployeeId; "
             "user) — WatchTower will have nobody to email. investigation_id=%s",
             event.project,
             investigation_id,

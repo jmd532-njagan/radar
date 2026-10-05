@@ -6,12 +6,11 @@ The caller is identified by the X-Radar-Assertion header WatchTower's proxy atta
 request: a short-lived HS256 JWT signed with RADAR_ASSERTION_SECRET, whose `id` claim is
 WatchTower's public.User.id — the identity every check here keys on (never email).
 
-A user is a member of a project if either:
-- WatchTower's public."UserProjectAssignment" has a row for them (manual assignment), or
-- they're one of the people picked for that project in WatchTower's Integrations tab:
-  public."credentialUser" links each integration (public."Credential") to their JIN
-  employee_id, which is public."User"."jinEmployeeId" (also their Entra object id, saved at
-  SSO login). Credential.resources holds the same people's names, for display only.
+A user is a member of a project if they're one of the people picked for it in WatchTower's
+Integrations tab: public."credentialUser" links each integration (public."Credential") to their
+JIN employee_id, which is public."User"."jinEmployeeId" (also their Entra object id, saved at
+SSO login), and its notifyOnFailure says whether they get RADAR's emails. Credential.resources
+holds the same people's names, for display only.
 """
 
 import jwt
@@ -22,43 +21,42 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config.settings import settings
 
 
-async def _project_employee_ids(db: AsyncSession, project: str) -> set[str]:
-    """The JIN employee ids picked for the project's live integrations (credentialUser)."""
+async def _project_employee_ids(db: AsyncSession, project: str) -> dict[str, bool]:
+    """The JIN employee ids linked to the project's live integrations (credentialUser), each
+    with whether they get RADAR's emails — on if any of their links says so."""
     linked = await db.execute(
         text(
-            'SELECT cu."employeeId" FROM public."credentialUser" cu '
+            'SELECT cu."employeeId", cu."notifyOnFailure" FROM public."credentialUser" cu '
             'JOIN public."Credential" c ON c.id = cu."credentialId" '
             'WHERE c."projectName" = :project AND NOT c."isDeleted"'
         ),
         {"project": project},
     )
-    return {employee_id for (employee_id,) in linked if employee_id}
+    ids: dict[str, bool] = {}
+    for employee_id, notify in linked:
+        if employee_id:
+            ids[employee_id] = ids.get(employee_id, False) or bool(notify)
+    return ids
 
 
-async def _resource_member_ids(db: AsyncSession, project: str) -> set[str]:
-    employee_ids = await _project_employee_ids(db, project)
-    if not employee_ids:
-        return set()
+async def project_members(db: AsyncSession, project: str) -> dict[str, dict]:
+    """Every project member: user id → {"notify": whether they get RADAR's emails}."""
+    links = {
+        e.lower(): n for e, n in (await _project_employee_ids(db, project)).items()
+    }
+    if not links:
+        return {}
     result = await db.execute(
         text(
-            'SELECT id FROM public."User" WHERE lower("jinEmployeeId") IN :ids'
+            'SELECT id, "jinEmployeeId" FROM public."User" WHERE lower("jinEmployeeId") IN :ids'
         ).bindparams(bindparam("ids", expanding=True)),
-        {"ids": sorted(r.lower() for r in employee_ids)},
+        {"ids": sorted(links)},
     )
-    return {str(uid) for (uid,) in result}
+    return {str(uid): {"notify": links[emp.lower()]} for uid, emp in result}
 
 
 async def is_project_member(db: AsyncSession, user_id: str, project: str) -> bool:
-    assigned = await db.execute(
-        text(
-            'SELECT 1 FROM public."UserProjectAssignment" '
-            'WHERE "userId" = :user_id AND "projectName" = :project'
-        ),
-        {"user_id": user_id, "project": project},
-    )
-    if assigned.first() is not None:
-        return True
-    return user_id in await _resource_member_ids(db, project)
+    return user_id in await project_members(db, project)
 
 
 async def _is_admin(db: AsyncSession, user_id: str) -> bool:
@@ -69,36 +67,8 @@ async def _is_admin(db: AsyncSession, user_id: str) -> bool:
     return result.first() is not None
 
 
-async def project_members(db: AsyncSession, project: str) -> dict[str, dict]:
-    """Every project member: user id → {"sources": how they're a member ("resource" and/or
-    "assigned"), "notify": false only when their assignment has notifyOnFailure off}."""
-    result = await db.execute(
-        text(
-            'SELECT "userId", "notifyOnFailure" FROM public."UserProjectAssignment" '
-            'WHERE "projectName" = :project'
-        ),
-        {"project": project},
-    )
-    assignments = {str(uid): bool(notify) for uid, notify in result}
-    resources = await _resource_member_ids(db, project)
-    return {
-        uid: {
-            "sources": [
-                source
-                for source, member in (
-                    ("resource", uid in resources),
-                    ("assigned", uid in assignments),
-                )
-                if member
-            ],
-            "notify": assignments.get(uid, True),
-        }
-        for uid in resources | assignments.keys()
-    }
-
-
 async def notification_recipient_ids(db: AsyncSession, project: str) -> list[str]:
-    """Every project member, minus anyone whose manual assignment has notifyOnFailure off."""
+    """Every project member whose credentialUser link has notifyOnFailure on."""
     members = await project_members(db, project)
     return sorted(uid for uid, member in members.items() if member["notify"])
 

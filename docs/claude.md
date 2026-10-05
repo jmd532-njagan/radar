@@ -70,13 +70,13 @@ Chat turns stream back as Server-Sent Events.
 **WatchTower tables RADAR reads (never writes), in `public`:**
 - `User`: `id`, `name`, `email`, `isAdmin`, `jinEmployeeId` (the JIN employee id, also the
   person's Entra object id, saved at SSO login).
-- `UserProjectAssignment`: manual project members, with `notifyOnFailure`.
 - `Credential` + `Service`: one row per project integration from WatchTower's Integrations
   tab. `Service.name` is the platform (`adf`, `fabric`, …); the row holds the connection
   fields, the encrypted secret, `pipelines[]` (monitored) and `resources[]` (people's names,
   display only).
 - `credentialUser`: the people picked for each integration, as (`credentialId`,
-  `employeeId` = `User.jinEmployeeId`). This is what project membership is read from.
+  `employeeId` = `User.jinEmployeeId`, `notifyOnFailure`). This is what project membership,
+  and who gets RADAR's emails, is read from.
 - `AppProject`: WatchTower's project list (synced from the company's JIN database).
 
 ## 3. How a request flows
@@ -95,7 +95,7 @@ Chat turns stream back as Server-Sent Events.
 5. Insert the `FailureEvent`, one per event, never batched.
 6. Unless cancelled, `chat/notification.py::prepare_notification`:
    - builds a short templated seed message (no LLM);
-   - computes the recipients (project members, minus anyone with `notifyOnFailure=false`);
+   - computes the recipients (project members whose `credentialUser.notifyOnFailure` is on);
    - writes a `notification_ready` audit row.
 
 ### 3.2 A chat turn (`chat/router.py` → `chat/service.py` → `llm/agent.py`)
@@ -239,10 +239,10 @@ first.
 
 ## 7. Access control (`chat/access.py`)
 
-A user is a **member** of a project if they either:
-- have a `UserProjectAssignment` row, or
-- are linked to one of the project's live integrations in `credentialUser` (the people picked
-  in the Integrations tab), by their JIN employee id = `User.jinEmployeeId`.
+A user is a **member** of a project if they're linked to one of its live integrations in
+`credentialUser` (the people picked in the Integrations tab), by their JIN employee id =
+`User.jinEmployeeId`. That row's `notifyOnFailure` decides whether they get RADAR's emails
+(failure alerts, memory updates); it doesn't affect access.
 
 Access rules:
 - **Read** (`require_project_access`): member or admin.
@@ -489,7 +489,7 @@ Azure error parser.
 | Symptom | Where to look |
 |---|---|
 | Failures don't arrive | RADAR log: `Failure event rejected` = HMAC mismatch. Nothing at all = WatchTower isn't polling or the pipeline isn't in `Credential.pipelines`. |
-| A user sees no project / gets 403 | `chat/access.py`: are they in `UserProjectAssignment`, or linked to the project's integration in `credentialUser` (their `jinEmployeeId`)? Admins are read-only. |
+| A user sees no project / gets 403 | `chat/access.py`: are they linked to the project's integration in `credentialUser` (their `jinEmployeeId`)? Admins are read-only. |
 | 401 on chat calls | `RADAR_ASSERTION_SECRET` mismatch, or the user has no `User` row. |
 | "Failed to decrypt client_secret" | `WATCHTOWER_CREDENTIAL_KEY` ≠ WatchTower `JWT_SECRET_KEY`. |
 | Agent doesn't use a tool | Is it in `rbac_permissions` with `allowed`? Is it retrieved for that message (`retrieve_relevant_tools`)? Is the description clear? |

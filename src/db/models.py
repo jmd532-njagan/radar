@@ -33,7 +33,7 @@ class ProjectMetadata(Base):
     __tablename__ = "project_metadata"
 
     # WatchTower's own projectName, verbatim — the same key public."Credential" and
-    # public."UserProjectAssignment" use, so every cross-schema lookup matches exactly.
+    # WatchTower's other tables use, so every cross-schema lookup matches exactly.
     project: Mapped[str] = mapped_column(String, primary_key=True)
 
     # A project is always one platform (adf | synapse | databricks | fabric), even if it has
@@ -339,7 +339,7 @@ class ChatThread(Base):
     Not 1:1 with FailureEvent — a thread can be ad-hoc (project-scoped, no failure event) or
     failure-triggered (investigation_id set). A new ad-hoc thread ties to a project by the
     caller supplying `project` explicitly at creation (e.g. picked from the sidebar of
-    projects the user has access to per WatchTower's UserProjectAssignment) — there's no
+    projects the user is a member of per WatchTower's credentialUser) — there's no
     other signal to infer it from. A failure-triggered thread instead inherits `project` from
     its FailureEvent row, so that association is automatic. claimed_by_user_id is set via a
     single atomic conditional UPDATE on first real write action (not on merely opening the

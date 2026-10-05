@@ -36,8 +36,10 @@ All are listed in `.env.example`.
 
 | Change | Migration |
 |---|---|
-| `UserProjectAssignment` table: manual project members for RADAR, with `notifyOnFailure` | earlier `feat-radar` commit (`aba8169`) |
-| None of its own beyond that: RADAR reads main's `User.jinEmployeeId` and `credentialUser` (migration `20260925123354_constraints_added`, from `main`) | — |
+| `credentialUser.notifyOnFailure` (boolean, default true): whether the person gets RADAR's emails for that project | `20261005000000_radar_membership_on_credential_user` |
+| `UserProjectAssignment`: added earlier on this branch (`20260729133259_add_user_project_assignment`) and dropped again by the migration above, so the branch adds no table of its own | same |
+
+Everything else RADAR reads is main's: `User.jinEmployeeId` and `credentialUser` (migration `20260925123354_constraints_added`).
 
 RADAR's own tables live in a separate `radar` schema, migrated from the RADAR repo; nothing in
 WatchTower's Prisma touches them.
@@ -112,7 +114,10 @@ Conflicts and how they were resolved:
 
 **Who is on a project (changed with this merge).** RADAR and WatchTower's RADAR code
 (`api/radar/projects`, `radar-email.ts`, `memory/notify`) now read project membership from main's
-`credentialUser` ↔ `User.jinEmployeeId` (plus manual `UserProjectAssignment` rows).
+`credentialUser` ↔ `User.jinEmployeeId` only, and its `notifyOnFailure` decides who's emailed.
+Two fixes to main's `api/service/route.ts` go with it: **adding** an integration now creates its
+`credentialUser` rows (main's create path didn't, so a new integration had no members), and
+**editing** one keeps each person's `notifyOnFailure` when the rows are recreated.
 `Credential.resources` holds people's names and is not used for membership. `feat-radar`'s own
 `User.azureObjectId` column (the same id) was removed before it was ever committed.
 

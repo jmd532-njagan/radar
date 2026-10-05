@@ -31,7 +31,7 @@ async def chat_db_factory():
     constructs (pg_insert etc.), so this is safe and far faster than real Postgres per test.
 
     Also attaches a fake "public" schema with minimal stand-ins for WatchTower's own
-    public."User"/"UserProjectAssignment"/"Service"/"Credential"/"credentialUser" tables —
+    public."User"/"Service"/"Credential"/"credentialUser" tables —
     chat/access.py,
     chat/notification.py and gateway/credential_resolution.py run real raw SQL against those,
     so tests need something for that SQL to hit. Only the columns those queries select/join on
@@ -47,10 +47,6 @@ async def chat_db_factory():
             'name TEXT, "isAdmin" INTEGER NOT NULL DEFAULT 0, "jinEmployeeId" TEXT)'
         )
         await conn.exec_driver_sql(
-            'CREATE TABLE public."UserProjectAssignment" ('
-            '"userId" TEXT NOT NULL, "projectName" TEXT NOT NULL, "notifyOnFailure" INTEGER NOT NULL DEFAULT 1)'
-        )
-        await conn.exec_driver_sql(
             'CREATE TABLE public."Service" (id TEXT PRIMARY KEY, name TEXT NOT NULL)'
         )
         await conn.exec_driver_sql(
@@ -61,29 +57,56 @@ async def chat_db_factory():
             '"createdAt" TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)'
         )
         await conn.exec_driver_sql(
-            'CREATE TABLE public."credentialUser" ("credentialId" TEXT NOT NULL, "employeeId" TEXT NOT NULL)'
+            'CREATE TABLE public."credentialUser" ("credentialId" TEXT NOT NULL, "employeeId" TEXT NOT NULL, '
+            '"notifyOnFailure" INTEGER NOT NULL DEFAULT 1)'
         )
     factory = async_sessionmaker(engine, expire_on_commit=False)
     yield factory
     await engine.dispose()
 
 
+async def _ensure_integration(db, project: str) -> None:
+    """A live ADF integration for `project` (cred-<project>), as the Integrations tab writes it."""
+    await db.execute(
+        text(
+            """INSERT INTO public."Service" (id, name) SELECT 'svc-adf', 'adf'
+            WHERE NOT EXISTS (SELECT 1 FROM public."Service" WHERE id = 'svc-adf')"""
+        )
+    )
+    await db.execute(
+        text(
+            """INSERT INTO public."Credential" (id, "serviceId", "projectName", "tenantId",
+            "clientId", "clientSecret", "subscriptionId", "resourceGroupName",
+            "dataFactoryName") SELECT :id, 'svc-adf', :project, 't', 'c', 'encrypted',
+            's', 'rg', 'f' WHERE NOT EXISTS (SELECT 1 FROM public."Credential" WHERE id = :id)"""
+        ),
+        {"id": f"cred-{project}", "project": project},
+    )
+
+
 async def seed_watchtower_access(
     db_factory, user_id: str, email: str, project: str, notify_on_failure: bool = True
 ) -> None:
-    """Populates the fake public."User"/public."UserProjectAssignment" rows chat/access.py's
-    require_project_access and chat/notification.py's recipient lookup actually query."""
+    """Makes the user a project member the way the Integrations tab does: a public."User" row
+    with a jinEmployeeId, linked to the project's integration in public."credentialUser"."""
     async with db_factory() as db:
         await db.execute(
-            text('INSERT INTO public."User" (id, email) VALUES (:id, :email)'),
-            {"id": user_id, "email": email},
+            text(
+                'INSERT INTO public."User" (id, email, "jinEmployeeId") VALUES (:id, :email, :emp)'
+            ),
+            {"id": user_id, "email": email, "emp": f"emp-{user_id}"},
         )
+        await _ensure_integration(db, project)
         await db.execute(
             text(
-                'INSERT INTO public."UserProjectAssignment" ("userId", "projectName", "notifyOnFailure") '
-                "VALUES (:user_id, :project, :notify)"
+                'INSERT INTO public."credentialUser" ("credentialId", "employeeId", "notifyOnFailure") '
+                "VALUES (:cred, :emp, :notify)"
             ),
-            {"user_id": user_id, "project": project, "notify": notify_on_failure},
+            {
+                "cred": f"cred-{project}",
+                "emp": f"emp-{user_id}",
+                "notify": notify_on_failure,
+            },
         )
         await db.commit()
 
@@ -91,21 +114,7 @@ async def seed_watchtower_access(
 async def seed_watchtower_integration(db_factory, project: str) -> None:
     """A live ADF integration for `project`, as WatchTower's Integrations tab would write it."""
     async with db_factory() as db:
-        await db.execute(
-            text(
-                """INSERT INTO public."Service" (id, name) SELECT 'svc-adf', 'adf'
-                WHERE NOT EXISTS (SELECT 1 FROM public."Service" WHERE id = 'svc-adf')"""
-            )
-        )
-        await db.execute(
-            text(
-                """INSERT INTO public."Credential" (id, "serviceId", "projectName", "tenantId",
-                "clientId", "clientSecret", "subscriptionId", "resourceGroupName",
-                "dataFactoryName") VALUES (:id, 'svc-adf', :project, 't', 'c', 'encrypted',
-                's', 'rg', 'f')"""
-            ),
-            {"id": f"cred-{project}", "project": project},
-        )
+        await _ensure_integration(db, project)
         await db.commit()
 
 
