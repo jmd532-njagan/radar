@@ -18,6 +18,9 @@ dependencies = [
     "pycryptodome>=3.23.0,<4",
     "sentence-transformers>=5.7.0,<6",
     "defusedxml>=0.7,<0.8",
+    # Pulled in by sentence-transformers; listed so Linux (Docker, servers) gets the CPU-only
+    # build below instead of the default one with several GB of unused NVIDIA libraries.
+    "torch>=2.14,<2.15",
 ]
 
 [dependency-groups]
@@ -31,6 +34,14 @@ dev = [
 
 [tool.uv]
 package = false
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
